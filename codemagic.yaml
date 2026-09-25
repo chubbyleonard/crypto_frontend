@@ -10,15 +10,23 @@ workflows:
       - name: Get Flutter packages
         script: flutter pub get
         
-      - name: Fix CocoaPods Deployment Target
+      - name: Fix Build Settings (Deployment Target & FFI Stripping)
         script: |
           rm -f ios/Podfile.lock
+          
+          # 1. Force iOS 15.0 Deployment Target
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
+          # 2. Disable Dead Code Stripping in the Runner project
+          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
+          
+          # 3. Disable Dead Code Stripping in all CocoaPods targets
+          perl -pi -e 's/flutter_additional_ios_build_settings\(target\)/flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |config|\n        config.build_settings["DEAD_CODE_STRIPPING"] = "NO"\n      end/g' ios/Podfile
+          
       - name: Build unsigned iOS app (Physical Device) and package to IPA
         script: |
-          # Target physical hardware (iphoneos) so Rust FFI binds correctly
+          # Target physical hardware so Rust FFI binds to your iPhone's ARM64 chip
           flutter build ios --release --no-codesign
           
           mkdir -p build/ios/iphoneos/Payload
