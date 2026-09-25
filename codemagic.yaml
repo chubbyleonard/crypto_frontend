@@ -12,9 +12,17 @@ workflows:
         script: |
           flutter pub get
           
+      - name: Force iOS 15 Deployment Target
+        script: |
+          # This forces CocoaPods to recognize iOS 15.0 as the minimum target
+          sed -i '' "s/^# platform :ios, '12.0'/platform :ios, '15.0'/" ios/Podfile
+          sed -i '' "s/^# platform :ios, '13.0'/platform :ios, '15.0'/" ios/Podfile
+          
       - name: Configure iOS Podfile and Native Bindings
         script: |
           cd ios
+          # Ensure the pods repo is updated before installing
+          pod repo update
           pod install
           
       - name: Build Android Release APK
