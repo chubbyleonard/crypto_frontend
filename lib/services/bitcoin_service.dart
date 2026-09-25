@@ -1,12 +1,23 @@
 import 'package:bdk_flutter/bdk_flutter.dart';
 
 class BitcoinService {
-  // ==========================================
-  // 1. Initialize the BDK Wallet from Seed
-  // ==========================================
-  static Future<Wallet> _getWallet(String seedPhrase) async {
-    final mnemonic = await Mnemonic.fromString(seedPhrase);
+  // Dart Futures used as initialization locks
+  static Future<Wallet>? _walletInitialization;
+  static Future<Blockchain>? _blockchainInitialization;
 
+  // ==========================================
+  // 1. Initialize the BDK Wallet (Concurrency-Safe)
+  // ==========================================
+  static Future<Wallet> _getWallet(String seedPhrase) {
+    // The null-coalescing assignment (??=) locks the initialization.
+    // If called simultaneously, both UI requests await the exact same FFI process.
+    _walletInitialization ??= _buildWallet(seedPhrase);
+    return _walletInitialization!;
+  }
+
+  static Future<Wallet> _buildWallet(String seedPhrase) async {
+    final mnemonic = await Mnemonic.fromString(seedPhrase);
+    
     final secretKey = await DescriptorSecretKey.create(
       network: Network.Bitcoin,
       mnemonic: mnemonic,
@@ -33,9 +44,14 @@ class BitcoinService {
   }
 
   // ==========================================
-  // 2. Connect to the Blockchain Network
+  // 2. Connect to Blockchain (Concurrency-Safe)
   // ==========================================
-  static Future<Blockchain> _getBlockchain() async {
+  static Future<Blockchain> _getBlockchain() {
+    _blockchainInitialization ??= _buildBlockchain();
+    return _blockchainInitialization!;
+  }
+
+  static Future<Blockchain> _buildBlockchain() async {
     return await Blockchain.create(
       config: BlockchainConfig.electrum(
         config: const ElectrumConfig(
@@ -43,7 +59,7 @@ class BitcoinService {
           retry: 5,
           timeout: 5,
           stopGap: 10,
-          validateDomain: true, // Required parameter added for v0.30.0
+          validateDomain: true,
         ),
       ),
     );
@@ -73,11 +89,18 @@ class BitcoinService {
       // Sync the wallet's transaction history with the public ledger
       await wallet.sync(blockchain);
 
-      // BDK returns balances in Satoshis. We divide by 100 million to get standard BTC.
       final balance = await wallet.getBalance();
       return balance.total / 100000000;
     } catch (e) {
       throw Exception('Failed to fetch Bitcoin balance: $e');
     }
+  }
+
+  // ==========================================
+  // 5. Reset State (Call this if the user logs out)
+  // ==========================================
+  static void clearSession() {
+    _walletInitialization = null;
+    _blockchainInitialization = null;
   }
 }
