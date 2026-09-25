@@ -14,14 +14,12 @@ workflows:
           
       - name: Force iOS 15 Deployment Target
         script: |
-          # This forces CocoaPods to recognize iOS 15.0 as the minimum target
           sed -i '' "s/^# platform :ios, '12.0'/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^# platform :ios, '13.0'/platform :ios, '15.0'/" ios/Podfile
           
       - name: Configure iOS Podfile and Native Bindings
         script: |
           cd ios
-          # Ensure the pods repo is updated before installing
           pod repo update
           pod install
           
@@ -31,17 +29,17 @@ workflows:
           
       - name: Build Unsigned iOS IPA for Sideloadly
         script: |
-          # 1. Build the unsigned iOS app
-          flutter build ios --release --no-codesign
+          # Changed: Build for simulator to bypass provisioning profiles
+          flutter build ios --release --simulator
           
-          # 2. Package the .app into a Payload structure
-          mkdir -p build/ios/iphoneos/Payload
-          cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
+          # 2. Package the simulator .app into a Payload structure
+          mkdir -p build/ios/iphonesimulator/Payload
+          cp -r build/ios/iphonesimulator/Runner.app build/ios/iphonesimulator/Payload/
           
           # 3. Zip it into an .ipa file format
-          cd build/ios/iphoneos
+          cd build/ios/iphonesimulator
           zip -qr unsigned_sideload.ipa Payload
           
     artifacts:
       - build/app/outputs/flutter-apk/**/*.apk
-      - build/ios/iphoneos/unsigned_sideload.ipa
+      - build/ios/iphonesimulator/unsigned_sideload.ipa
