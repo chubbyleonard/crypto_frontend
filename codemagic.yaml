@@ -1,6 +1,6 @@
 workflows:
   ios-release-workflow:
-    name: iOS Release Workflow
+    name: iOS Sideloadly Release
     max_build_duration: 60
     instance_type: mac_mini_m1
     environment:
@@ -9,12 +9,22 @@ workflows:
     scripts:
       - name: Get Flutter packages
         script: flutter pub get
-      - name: Build unsigned iOS app and package to IPA
+        
+      - name: Fix CocoaPods Deployment Target
         script: |
+          rm -f ios/Podfile.lock
+          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          
+      - name: Build unsigned iOS app (Physical Device) and package to IPA
+        script: |
+          # Target physical hardware (iphoneos) so Rust FFI binds correctly
           flutter build ios --release --no-codesign
+          
           mkdir -p build/ios/iphoneos/Payload
           cp -r build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/
           cd build/ios/iphoneos
           zip -qr app.ipa Payload
+          
     artifacts:
       - build/ios/iphoneos/app.ipa
