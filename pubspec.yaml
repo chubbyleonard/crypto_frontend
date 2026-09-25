@@ -1,0 +1,51 @@
+name: crypto_frontend
+description: "A personal crypto withdrawal application."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  
+  # Network & Centralized API
+  http: ^1.2.0
+  crypto: ^3.0.7
+  
+  # Device Storage
+  flutter_secure_storage: ^9.0.0
+  
+  # Camera & QR Scanning
+  mobile_scanner: ^5.0.0
+  
+  # On-Chain / Self-Custody Wallets (EVM Ecosystem)
+  web3dart: ^2.7.3
+  bip39: ^1.0.6
+  bip32: ^2.0.0
+  hex: ^0.2.0
+  
+  # On-Chain / Self-Custody Wallets (Bitcoin Network - Stable)
+  bdk_flutter: ^0.30.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  # Package to generate native Android/iOS app icons
+  flutter_launcher_icons: ^0.13.1
+
+# Configuration for icon generation
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  min_sdk_android: 21
+
+flutter:
+  uses-material-design: true
+  # Expose the assets folder so Flutter bundles your image
+  assets:
+    - assets/icons/
