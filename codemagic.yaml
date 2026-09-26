@@ -14,13 +14,13 @@ workflows:
           rm -f ios/Podfile.lock
           flutter pub get
           
-      - name: Patch Podfile & Force Target Environment
+      - name: Inject Linker Flags & Update Deployment Target
         script: |
-          # Force iOS 15.0 Deployment Target globally inside the Podfile
+          # Force iOS 15.0 globally at the top of the Podfile
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Inject linker flags and completely drop signing restrictions inside the CocoaPods tree
+          # Inject rules *safely* inside the loop without deleting Flutter's core macro
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -33,84 +33,39 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                  config.build_settings['ENABLE_BITCODE'] = 'NO'
                 end"""
                 
           if target_hook in content:
               content = content.replace(target_hook, injection)
               with open(path, 'w') as f:
                   f.write(content)
+              print("Podfile updated successfully.")
+          else:
+              print("Warning: Hook point not found in Podfile.")
           EOF
+          
           python3 fix_podfile.py
           
-          # Force layout properties within Flutter's own config override files
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
-          echo "ENABLE_BITCODE=NO" >> ios/Flutter/Release.xcconfig
+          # Ensure Flutter configuration respects the linker rules
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           
+          # Install pods from the ios directory
           cd ios && pod install
           
-      - name: The Nuclear Option - Strip Xcode Project Signing Configurations
-        script: |
-          # This Python script directly modifies the internal Xcode project matrix
-          # It strips out Team IDs and forces signing fields to empty strings to prevent Xcode build drops
-          cat << 'EOF' > strip_signing.py
-          import re
-
-          path = "ios/Runner.xcodeproj/project.pbxproj"
-          with open(path, "r") as f:
-              lines = f.readlines()
-
-          out = []
-          for line in lines:
-              # Eliminate signing identities, provisioning rules, and specific team markers
-              if "DEVELOPMENT_TEAM" in line:
-                  line = re.sub(r'DEVELOPMENT_TEAM = [^;]+;', 'DEVELOPMENT_TEAM = "";', line)
-              if "CODE_SIGN_IDENTITY" in line:
-                  line = re.sub(r'CODE_SIGN_IDENTITY = [^;]+;', 'CODE_SIGN_IDENTITY = "";', line)
-              if "PROVISIONING_PROFILE_SPECIFIER" in line:
-                  line = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]+;', 'PROVISIONING_PROFILE_SPECIFIER = "";', line)
-              if "PROVISIONING_PROFILE" in line:
-                  line = re.sub(r'PROVISIONING_PROFILE = [^;]+;', 'PROVISIONING_PROFILE = "";', line)
-              if "CODE_SIGN_STYLE" in line:
-                  line = re.sub(r'CODE_SIGN_STYLE = [^;]+;', 'CODE_SIGN_STYLE = Manual;', line)
-              out.append(line)
-
-          with open(path, "w") as f:
-              f.writelines(out)
-          print("✅ Xcode structural project configuration successfully cleared of team identifiers.")
-          EOF
-          python3 strip_signing.py
-
       - name: Build Unsigned iOS App & Package
         script: |
-          # 1. Run the compilation build explicitly routing out signing flags to the command-line executor
-          flutter build ios --release --no-codesign --no-pub --build-name=1.0.0 --build-number=1
+          # Build standard release without signing
+          flutter build ios --release --no-codesign
           
-          # 2. Safely capture the correct device target bundle location
-          APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ Error: Runner.app not found. Build dropped. Printing diagnostic context..."
-            ls -la build/ios || true
-            exit 1
-          fi
-          
-          echo "✅ Target location pinpointed: $APP_PATH"
-          
-          # 3. Clean environment workspace matrices
+          # Prepare the payload folder structure required for an IPA
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # 4. Clone all linked compilation assets
-          cp -RL "$APP_PATH" Payload/
+          # Copy the compiled application bundle
+          cp -R build/ios/Release-iphoneos/Runner.app Payload/
           
-          # 5. Pack into distribution archive format
+          # Zip the final bundle into an IPA
           zip -qr app.ipa Payload
-          echo "🎉 IPA Pack complete."
           
     artifacts:
       - app.ipa
