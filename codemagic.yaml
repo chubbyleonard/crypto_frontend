@@ -1,9 +1,62 @@
-- name: Build Unsigned App & Package IPA
+workflows:
+  ios-sideload-workflow:
+    name: iOS Sideloadly Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: Clean Workspace & Get Packages
+        script: |
+          flutter clean
+          rm -rf ios/Pods
+          rm -f ios/Podfile.lock
+          flutter pub get
+          
+      - name: Inject Linker & Signing Flags
+        script: |
+          # Force iOS 15.0 globally
+          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          
+          # Inject linker flags safely
+          cat << 'EOF' > fix_podfile.py
+          path = 'ios/Podfile'
+          with open(path, 'r') as f:
+              content = f.read()
+              
+          target_hook = 'flutter_additional_ios_build_settings(target)'
+          injection = """flutter_additional_ios_build_settings(target)
+                target.build_configurations.each do |config|
+                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
+                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+                  config.build_settings['STRIP_STYLE'] = 'non-global'
+                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                end"""
+                
+          if target_hook in content:
+              content = content.replace(target_hook, injection)
+              with open(path, 'w') as f:
+                  f.write(content)
+          EOF
+          python3 fix_podfile.py
+          
+          # FORCE disable signing in the release config to satisfy Xcode build checks
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
+          
+          cd ios && pod install
+          
+      - name: Build Unsigned App & Package IPA
         script: |
           # 1. Build the .app bundle
           flutter build ios --release --no-codesign --no-pub
           
-          # 2. Hardcode the exact paths
+          # 2. Hardcode the exact paths instead of guessing
           if [ -d "build/ios/iphoneos/Runner.app" ]; then
             APP_PATH="build/ios/iphoneos/Runner.app"
           elif [ -d "build/ios/Release-iphoneos/Runner.app" ]; then
@@ -20,8 +73,11 @@
           mkdir -p Payload
           
           # 4. Use Apple's native 'ditto' tool to clone the bundle perfectly
-          # This resolves the 520B issue by preserving all internal frameworks
+          # This copies all internal frameworks and metadata safely
           ditto "$APP_PATH" Payload/Runner.app
           
           # 5. Zip the folder into an IPA using ditto instead of standard zip
           ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
+          
+    artifacts:
+      - app.ipa
