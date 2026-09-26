@@ -7,20 +7,19 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Clean Workspace & Get Packages
+      - name: Get packages & clean
         script: |
           flutter clean
-          rm -rf ios/Pods
-          rm -f ios/Podfile.lock
+          rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
           
-      - name: Inject Linker & Ad-Hoc Signing Flags
+      - name: Inject BDK Linker Flags
         script: |
-          # Force iOS 15.0 globally
-          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
-          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          # Set minimum iOS version globally
+          sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
+          sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # Inject linker flags and force Ad-Hoc signing
+          # Inject Rust BDK linker flags into Podfile to prevent the FFI crash
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -33,11 +32,6 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
-                  
-                  # Enable Signing but force a dummy Ad-Hoc identity (-)
-                  config.build_settings['CODE_SIGN_IDENTITY'] = '-'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'YES'
                 end"""
                 
           if target_hook in content:
@@ -47,49 +41,32 @@ workflows:
           EOF
           python3 fix_podfile.py
           
-          # Inject Ad-Hoc rules into Flutter's native config
-          echo "CODE_SIGN_IDENTITY=-" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_ALLOWED=YES" >> ios/Flutter/Release.xcconfig
+          # Inject into Flutter's native Release config
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
+          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
           
-          cd ios && pod install
-          
-      - name: Build Ad-Hoc iOS App & Package IPA
+      - name: Install pods
         script: |
-          # 1. Compile Dart code and generate initial iOS structures
+          cd ios
+          pod install --repo-update
+          
+      - name: Build, Sign Ad-Hoc & Package
+        script: |
           flutter build ios --release --no-codesign
           
-          echo "🔨 Forcing Xcode to assemble binary with Ad-Hoc signature..."
-          
-          # 2. Run a direct Xcode build to force the framework embedding phase
-          # The identity "-" signs the app locally without needing a developer account
-          cd ios
-          xcodebuild -workspace Runner.xcworkspace \
-                     -scheme Runner \
-                     -configuration Release \
-                     -sdk iphoneos \
-                     SYMROOT="$(PWD)/../build/ios" \
-                     CODE_SIGN_IDENTITY="-" \
-                     CODE_SIGNING_REQUIRED="NO" \
-                     CODE_SIGNING_ALLOWED="YES" \
-                     build
-                     
-          cd ..
-          
-          # 3. Locate the freshly assembled Ad-Hoc app
-          APP_PATH=$(find build/ios -type d -name "Runner.app" -exec du -sk {} + 2>/dev/null | sort -nr | head -n 1 | cut -f2-)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ Critical Error: Runner.app not found."
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ Runner.app not found at $APP_PATH"
             exit 1
           fi
           
           APP_SIZE=$(du -sh "$APP_PATH" | awk '{print $1}')
-          echo "✅ Packaging authentic app from: $APP_PATH"
-          echo "📊 Verified App Size: $APP_SIZE"
+          echo "✅ Verified App Size: $APP_SIZE"
           
-          # 4. Package for Sideloadly using Apple ditto
+          # Apply Ad-Hoc signature deep into the bundle and frameworks
+          echo "🔨 Applying deep Ad-Hoc signature..."
+          codesign --force --deep --sign - "$APP_PATH"
+          
           rm -rf Payload app.ipa
           mkdir -p Payload
           ditto "$APP_PATH" Payload/Runner.app
