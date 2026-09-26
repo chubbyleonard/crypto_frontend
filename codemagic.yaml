@@ -53,17 +53,14 @@ workflows:
           # Build standard release
           flutter build ios --release --no-codesign
           
-          # 1. Create the Payload directory in the root workspace
+          # 1. Create Payload folder
           mkdir -p Payload
           
-          # 2. Dynamically find the actual Runner.app folder, no matter where Xcode put it
-          APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
+          # 2. Use cp -RL to FORCE the server to follow the symlink and copy the REAL 50MB app bundle
+          cp -RL build/ios/iphoneos/Runner.app Payload/
           
-          # 3. Move the app directly into Payload (move is bulletproof for iOS bundles)
-          mv "$APP_PATH" Payload/
-          
-          # 4. Zip the Payload into the final IPA (-y preserves required internal frameworks)
-          zip -r -y app.ipa Payload/
+          # 3. Zip it (WITHOUT the -y flag, so it packages the actual files we just copied)
+          zip -qr app.ipa Payload
           
     artifacts:
       - app.ipa
