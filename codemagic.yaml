@@ -10,23 +10,25 @@ workflows:
       - name: Get Flutter packages
         script: flutter pub get
         
-      - name: Fix Build Settings (Deployment Target & FFI Stripping)
+      - name: Fix Xcode Aggressive C-Symbol Stripping
         script: |
           rm -f ios/Podfile.lock
           
-          # 1. Force iOS 15.0 Deployment Target
+          # 1. Force iOS 15 Deployment Target
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # 2. Disable Dead Code Stripping in the Runner project
+          # 2. Tell the main iOS Runner to completely disable all forms of release stripping
           echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
+          echo "STRIP_INSTALLED_PRODUCT = NO" >> ios/Flutter/Release.xcconfig
+          echo "STRIP_STYLE = debugging" >> ios/Flutter/Release.xcconfig
+          echo "DEPLOYMENT_POSTPROCESSING = NO" >> ios/Flutter/Release.xcconfig
           
-          # 3. Disable Dead Code Stripping in all CocoaPods targets
-          perl -pi -e 's/flutter_additional_ios_build_settings\(target\)/flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |config|\n        config.build_settings["DEAD_CODE_STRIPPING"] = "NO"\n      end/g' ios/Podfile
+          # 3. Tell CocoaPods to apply the exact same anti-stripping rules to the bdk_flutter native library
+          perl -pi -e 's/flutter_additional_ios_build_settings\(target\)/flutter_additional_ios_build_settings(target)\n      target.build_configurations.each do |config|\n        config.build_settings["DEAD_CODE_STRIPPING"] = "NO"\n        config.build_settings["STRIP_INSTALLED_PRODUCT"] = "NO"\n        config.build_settings["STRIP_STYLE"] = "debugging"\n        config.build_settings["DEPLOYMENT_POSTPROCESSING"] = "NO"\n      end/g' ios/Podfile
           
       - name: Build unsigned iOS app (Physical Device) and package to IPA
         script: |
-          # Target physical hardware so Rust FFI binds to your iPhone's ARM64 chip
           flutter build ios --release --no-codesign
           
           mkdir -p build/ios/iphoneos/Payload

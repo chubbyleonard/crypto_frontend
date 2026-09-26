@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'dart:async'; // Added for Timeout logic
 import 'services/api_service.dart';
 import 'services/web3_service.dart';
 import 'services/bitcoin_service.dart';
@@ -127,25 +128,47 @@ class _DashboardTabState extends State<DashboardTab> {
     final password = await _storage.read(key: 'apiPassword');
 
     if (exchangeId == null || apiKey == null || apiSecret == null) {
-      setState(() { _isLoading = false; _errorMessage = 'NO_KEYS'; });
+      if (mounted) setState(() { _isLoading = false; _errorMessage = 'NO_KEYS'; });
       return;
     }
     setState(() => _activeExchange = exchangeId.toUpperCase());
-    final result = await ApiService.fetchBalance(exchangeId: exchangeId, apiKey: apiKey, apiSecret: apiSecret, password: password);
-    setState(() {
-      _isLoading = false;
-      if (result['success'] == true) {
-        final Map<String, dynamic> rawBalances = result['balances'] ?? {};
-        _balances = Map.fromEntries(rawBalances.entries.where((entry) {
-          final val = entry.value;
-          if (val is num) return val > 0;
-          if (val is String) return (double.tryParse(val) ?? 0) > 0;
-          return false;
-        }));
-      } else {
-        _errorMessage = result['message'] ?? 'Failed to load portfolio.';
+    
+    try {
+      // FIX: Added 15-second timeout to prevent infinite loading
+      final result = await ApiService.fetchBalance(
+        exchangeId: exchangeId, 
+        apiKey: apiKey, 
+        apiSecret: apiSecret, 
+        password: password
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => {'success': false, 'message': 'Connection timed out. Please try again.'},
+      );
+      
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          if (result['success'] == true) {
+            final Map<String, dynamic> rawBalances = result['balances'] ?? {};
+            _balances = Map.fromEntries(rawBalances.entries.where((entry) {
+              final val = entry.value;
+              if (val is num) return val > 0;
+              if (val is String) return (double.tryParse(val) ?? 0) > 0;
+              return false;
+            }));
+          } else {
+            _errorMessage = result['message'] ?? 'Failed to load portfolio.';
+          }
+        });
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = e.toString();
+        });
+      }
+    }
   }
 
   @override
@@ -170,7 +193,23 @@ class _DashboardTabState extends State<DashboardTab> {
             ],
           ),
           const SizedBox(height: 24),
-          if (_isLoading) const Center(child: Padding(padding: EdgeInsets.only(top: 80), child: CircularProgressIndicator(color: Color(0xFF00E5FF))))
+          // FIX: Added manual cancel button to the loading state
+          if (_isLoading) Center(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 80), 
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                  const SizedBox(height: 24),
+                  TextButton(
+                    onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Request cancelled by user.'; }),
+                    child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF00E5FF))),
+                  )
+                ],
+              )
+            )
+          )
           else if (_errorMessage == 'NO_KEYS') _buildEmptyKeysCard()
           else if (_errorMessage.isNotEmpty) _buildErrorCard(_errorMessage)
           else if (_balances.isEmpty) const Center(child: Text('Zero Available Balances', style: TextStyle(color: Color(0xFF8F9CAE))))
@@ -309,7 +348,7 @@ class _WithdrawTabState extends State<WithdrawTab> {
       exchangeId: exchangeId, apiKey: apiKey, apiSecret: apiSecret, password: password,
       currency: _currencyController.text.trim().toUpperCase(), amount: double.parse(_amountController.text.trim()), address: _addressController.text.trim(),
     );
-    setState(() { _isLoading = false; _isSuccess = response.success; _statusMessage = response.message; });
+    if (mounted) setState(() { _isLoading = false; _isSuccess = response.success; _statusMessage = response.message; });
   }
 
   @override
@@ -416,7 +455,7 @@ class _Web3TabState extends State<Web3Tab> {
     if (seed != null && seed.isNotEmpty) {
       await _initializeWalletData(seed);
     } else {
-      setState(() { _hasWallet = false; _isLoading = false; });
+      if (mounted) setState(() { _hasWallet = false; _isLoading = false; });
     }
   }
 
@@ -431,19 +470,23 @@ class _Web3TabState extends State<Web3Tab> {
       final btcAddr = await BitcoinService.getPublicAddress(seed);
       final btcBal = await BitcoinService.getBalance(seed);
       
-      setState(() {
-        _ethAddress = ethAddr;
-        _ethBalance = ethBal;
-        _btcAddress = btcAddr;
-        _btcBalance = btcBal;
-        _hasWallet = true;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _ethAddress = ethAddr;
+          _ethBalance = ethBal;
+          _btcAddress = btcAddr;
+          _btcBalance = btcBal;
+          _hasWallet = true;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Network error synchronizing blockchains: $e';
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Network error synchronizing blockchains: $e';
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -465,7 +508,9 @@ class _Web3TabState extends State<Web3Tab> {
       await _initializeWalletData(phrase);
       _seedController.clear();
     } catch (e) {
-      setState(() { _errorMessage = 'Invalid seed phrase format or network error.'; _isLoading = false; });
+      if (mounted) {
+        setState(() { _errorMessage = 'Invalid seed phrase format or network error.'; _isLoading = false; });
+      }
     }
   }
 
@@ -493,8 +538,24 @@ class _Web3TabState extends State<Web3Tab> {
           const Text('Web3 Wallet', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
           const SizedBox(height: 24),
           
+          // FIX: Added manual cancel button to the loading state
           if (_isLoading)
-            const Center(child: Padding(padding: EdgeInsets.all(40), child: CircularProgressIndicator(color: Color(0xFF00E5FF))))
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(40), 
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                    const SizedBox(height: 24),
+                    TextButton(
+                      onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Request cancelled by user.'; }),
+                      child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF00E5FF))),
+                    )
+                  ],
+                )
+              )
+            )
           else if (_hasWallet)
             _buildWalletDashboard()
           else
@@ -508,10 +569,23 @@ class _Web3TabState extends State<Web3Tab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // FIX: Replaced static error box with interactive dismissible Row
         if (_errorMessage != null)
           Container(
-            padding: const EdgeInsets.all(14), margin: const EdgeInsets.only(bottom: 18), decoration: BoxDecoration(color: const Color(0xFF2B141E), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF6B2432))),
-            child: Text(_errorMessage!, style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 13)),
+            padding: const EdgeInsets.all(14), 
+            margin: const EdgeInsets.only(bottom: 18), 
+            decoration: BoxDecoration(color: const Color(0xFF2B141E), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF6B2432))),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: Text(_errorMessage!, style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 13))),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () => setState(() => _errorMessage = null), // Instantly dismisses error
+                  child: const Icon(Icons.close, color: Color(0xFFFF8A80), size: 20),
+                )
+              ],
+            ),
           ),
         const Text('Enter your 12 or 24-word recovery phrase to securely derive your Dual-Chain (BTC & ETH) private keys.', style: TextStyle(color: Color(0xFF8F9CAE), height: 1.4)),
         const SizedBox(height: 20),
