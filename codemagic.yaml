@@ -9,7 +9,7 @@ workflows:
     scripts:
       - name: Get packages & clean
         script: |
-          set -e # Exit immediately if any command fails
+          set -e
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
@@ -17,11 +17,11 @@ workflows:
       - name: Inject BDK Linker Flags
         script: |
           set -e
-          # Set minimum iOS version globally
+          # 1. Force iOS 15.0 Deployment Target
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # Inject Rust BDK linker flags
+          # 2. Inject Linker Flags for Rust/BDK
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -34,6 +34,8 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
+                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                 end"""
                 
           if target_hook in content:
@@ -43,71 +45,43 @@ workflows:
           EOF
           python3 fix_podfile.py
           
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
-          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
-          
       - name: Install pods
         script: |
           set -e
           cd ios
           pod install --repo-update
           
-      - name: Force Device Build & Package
+      - name: Build Unsigned IPA
         script: |
           set -e
           
-          # 1. Generate Dart AOT
-          flutter build ios --config-only --release
+          # 1. Build using Flutter with NO CODESIGNING
+          # This creates a "Runner.app" without checking for Apple Certs
+          echo "🚀 Starting build with --no-codesign..."
+          flutter build ios --release --no-codesign
           
-          # 2. Define ABSOLUTE paths to prevent "cd" confusion
-          PROJECT_ROOT=$(pwd)
-          IOS_BUILD_DIR="$PROJECT_ROOT/build/ios"
-          APP_OUTPUT_PATH="$IOS_BUILD_DIR/Release-iphoneos/Runner.app"
+          # 2. Define Paths
+          # Note: Flutter --release output is typically in build/ios/iphoneos
+          APP_PATH="build/ios/iphoneos/Runner.app"
           
-          echo "📍 Building into: $IOS_BUILD_DIR"
-          
-          # 3. Force Native Compilation
-          cd ios
-          xcodebuild -workspace Runner.xcworkspace \
-                     -scheme Runner \
-                     -configuration Release \
-                     -sdk iphoneos \
-                     SYMROOT="$IOS_BUILD_DIR" \
-                     CODE_SIGNING_ALLOWED=NO \
-                     CODE_SIGNING_REQUIRED=NO \
-                     CODE_SIGN_IDENTITY="" \
-                     build
-          
-          cd "$PROJECT_ROOT"
-          
-          # 4. SAFETY CHECK: Ensure the .app actually exists and has content
-          if [ ! -d "$APP_OUTPUT_PATH" ]; then
-            echo "❌ CRITICAL ERROR: Runner.app was not found at $APP_OUTPUT_PATH"
-            echo "Listing build directory for debugging:"
+          # 3. Verify Build Success
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ Build failed. Runner.app not found at $APP_PATH"
             ls -R build/ios
             exit 1
           fi
           
-          # Check if the binary is inside (prevents empty folder zipping)
-          if [ ! -f "$APP_OUTPUT_PATH/Runner" ]; then
-             echo "❌ CRITICAL ERROR: Runner binary missing inside the app bundle."
-             exit 1
-          fi
+          echo "✅ Unsigned Runner.app found!"
           
-          echo "✅ Valid App Bundle found. Size:"
-          du -sh "$APP_OUTPUT_PATH"
-          
-          # 5. Sign & Package
-          codesign --force --deep --sign - "$APP_OUTPUT_PATH"
-          
+          # 4. Package manually into IPA
           rm -rf Payload app.ipa
-          mkdir -p Payload
+          mkdir Payload
+          cp -r "$APP_PATH" Payload/
           
-          # Use -v to verify files are actually copying
-          ditto -v "$APP_OUTPUT_PATH" Payload/Runner.app
-          ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
+          # Zip it up
+          zip -r -q app.ipa Payload
           
-          echo "🎁 Final IPA Created:"
+          echo "📦 Final IPA Size:"
           ls -lh app.ipa
           
     artifacts:
