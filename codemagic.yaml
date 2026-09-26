@@ -56,33 +56,47 @@ workflows:
         script: |
           set -e
           
-          # 1. Build a Simulator variant. 
-          # Flutter allows --no-codesign on simulator builds without throwing errors.
-          echo "🚀 Compiling simulator variant..."
-          flutter build ios --simulator --no-codesign --release
+          # 1. Prepare Flutter asset bundles and configurations cleanly
+          flutter build ios --config-only --release
           
-          # 2. Define Paths to target build output
+          # 2. Direct compilation with Xcode using the simulator SDK.
+          # This compiles the source into real machine code but ignores signing identities entirely.
+          cd ios
+          xcodebuild -workspace Runner.xcworkspace \
+                     -scheme Runner \
+                     -configuration Release \
+                     -sdk iphonesimulator \
+                     SYMROOT="$(pwd)/../build/ios" \
+                     COMPILER_INDEX_STORE_ENABLE=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     clean build
+          
+          cd ..
+          
+          # 3. Define output path structure
           PROJECT_ROOT=$(pwd)
-          APP_PATH="$PROJECT_ROOT/build/ios/iphonesimulator/Runner.app"
+          APP_PATH="$PROJECT_ROOT/build/ios/Release-iphonesimulator/Runner.app"
           
-          # 3. Verify compiler output stability
+          # 4. Verify compiler output stability
           if [ ! -d "$APP_PATH" ]; then
             echo "❌ Build failed. Compiled Runner.app was not found at $APP_PATH"
             ls -R build/ios
             exit 1
           fi
           
-          echo "✅ Simulator bundle compiled successfully! Processing Payload..."
+          echo "✅ Simulator release bundle compiled successfully!"
           
-          # 4. Pack structured Payload for Sideloadly
+          # 5. Pack structured Payload for Sideloadly
           rm -rf Payload app.ipa
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           
-          # 5. Add a dummy architecture profile to the Info.plist to allow sideload tools to recognize it
+          # 6. Inject the deployment criteria so sideload software treats it as a standard package
           plutil -replace UIRequiredDeviceCapabilities -array arm64 "Payload/Runner.app/Info.plist"
           
-          # Zip into an IPA file
+          # Zip into the final artifact container
           zip -r -q app.ipa Payload
           
           echo "📦 Final Unsigned Sideload IPA Size:"
