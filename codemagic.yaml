@@ -62,7 +62,7 @@ workflows:
           mkdir -p Payload
           
           # FORCE FOLLOW SYMLINK (-RL) to copy the actual app data, not the shortcut
-          cp -RL build/ios/iphoneos/Runner.app Payload/
+          cp -RL build/ios/Release-iphoneos/Runner.app Payload/
           
           # Zip the final bundle into an IPA
           zip -qr app.ipa Payload
