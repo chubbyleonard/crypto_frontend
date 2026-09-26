@@ -2,7 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'dart:async'; // Added for Timeout logic
+import 'dart:async';
+
+// --- NEW IMPORTS FOR NON-CUSTODIAL PIPELINE ---
+import 'package:http/http.dart' as http;
+import 'package:web3dart/web3dart.dart';
+import 'package:bdk_flutter/bdk_flutter.dart';
+import 'withdraw_screen.dart'; // The Web3 UI we built
+
 import 'services/api_service.dart';
 import 'services/web3_service.dart';
 import 'services/bitcoin_service.dart';
@@ -54,14 +61,125 @@ class MainNavigation extends StatefulWidget {
 
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
+  
+  // Web3 & RPC State
+  late final Web3Client _ethClient;
+  late final http.Client _httpClient;
+  
+  final _storage = const FlutterSecureStorage();
+  Wallet? _bdkWallet;
+  String? _ethPrivateKeyHex;
+  bool _isLoadingKeys = false;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    // 1. Initialize the HTTP client and Alchemy connection
+    _httpClient = http.Client();
+    _ethClient = Web3Client(
+      'https://eth-mainnet.g.alchemy.com/v2/alch_9CfSUPJIa_kZnTnWw8M5U',
+      _httpClient,
+    );
+    
+    // 2. Derive active keys for the Web3 Withdraw Screen
+    _loadWeb3Keys();
+  }
+
+  Future<void> _loadWeb3Keys() async {
+    setState(() => _isLoadingKeys = true);
+    try {
+      final seed = await _storage.read(key: 'web3_seed');
+      if (seed != null && seed.isNotEmpty) {
+        
+        // Load EVM Key
+        _ethPrivateKeyHex = Web3Service.getPrivateKeyFromSeed(seed);
+        
+        // Construct BDK Wallet instance for native BTC transactions
+        final mnemonic = await Mnemonic.fromString(seed);
+        final descriptorSecretKey = await DescriptorSecretKey.create(
+          network: Network.Bitcoin,
+          mnemonic: mnemonic,
+        );
+        final descriptor = await Descriptor.newBip84(
+          secretKey: descriptorSecretKey,
+          network: Network.Bitcoin,
+          keychain: KeychainKind.External,
+        );
+        _bdkWallet = await Wallet.create(
+          descriptor: descriptor,
+          network: Network.Bitcoin,
+          databaseConfig: const DatabaseConfig.memory(),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error generating Web3 keys: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingKeys = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ethClient.dispose();
+    _httpClient.close();
+    super.dispose();
+  }
 
   void _switchTab(int index) => setState(() => _currentIndex = index);
+
+  // Router that elegantly preserves your CEX withdrawal screen 
+  // alongside the new Web3 withdrawal screen
+  Widget _buildWithdrawRouter() {
+    if (_isLoadingKeys) {
+      return const Center(child: CircularProgressIndicator(color: Color(0xFF00E5FF)));
+    }
+    
+    // If wallet keys exist, render a swipeable tab bar combining both systems
+    if (_bdkWallet != null && _ethPrivateKeyHex != null) {
+      return DefaultTabController(
+        length: 2,
+        child: Scaffold(
+          backgroundColor: const Color(0xFF0A0E17),
+          appBar: PreferredSize(
+            preferredSize: const Size.fromHeight(60),
+            child: AppBar(
+              backgroundColor: const Color(0xFF0D1322),
+              elevation: 0,
+              bottom: const TabBar(
+                indicatorColor: Color(0xFF00E5FF),
+                labelColor: Color(0xFF00E5FF),
+                unselectedLabelColor: Color(0xFF8F9CAE),
+                tabs: [
+                  Tab(text: 'Web3 Transfer'),
+                  Tab(text: 'Exchange Transfer'),
+                ],
+              ),
+            ),
+          ),
+          body: TabBarView(
+            children: [
+              WithdrawScreen( // The new non-custodial pipeline
+                bdkWallet: _bdkWallet!,
+                ethPrivateKeyHex: _ethPrivateKeyHex!,
+                ethClient: _ethClient,
+              ),
+              const WithdrawTab(), // Your original CEX logic 
+            ],
+          ),
+        ),
+      );
+    }
+    
+    // Fallback: If no Web3 wallet is setup yet, just render your normal Exchange form
+    return const WithdrawTab(); 
+  }
 
   @override
   Widget build(BuildContext context) {
     final screens = [
       DashboardTab(onNavigateToSettings: () => _switchTab(3)),
-      const WithdrawTab(),
+      _buildWithdrawRouter(), // Injected routing logic
       const Web3Tab(),
       const SettingsTab(),
     ];
@@ -134,7 +252,6 @@ class _DashboardTabState extends State<DashboardTab> {
     setState(() => _activeExchange = exchangeId.toUpperCase());
     
     try {
-      // FIX: Added 15-second timeout to prevent infinite loading
       final result = await ApiService.fetchBalance(
         exchangeId: exchangeId, 
         apiKey: apiKey, 
@@ -193,7 +310,6 @@ class _DashboardTabState extends State<DashboardTab> {
             ],
           ),
           const SizedBox(height: 24),
-          // FIX: Added manual cancel button to the loading state
           if (_isLoading) Center(
             child: Padding(
               padding: const EdgeInsets.only(top: 80), 
@@ -264,7 +380,7 @@ class _DashboardTabState extends State<DashboardTab> {
 }
 
 // ==========================================
-// TAB 2: WITHDRAWAL FORM
+// CEX WITHDRAWAL FORM
 // ==========================================
 class WithdrawTab extends StatefulWidget {
   const WithdrawTab({super.key});
@@ -461,12 +577,10 @@ class _Web3TabState extends State<Web3Tab> {
 
   Future<void> _initializeWalletData(String seed) async {
     try {
-      // 1. Initialize Ethereum Data
       final privateKey = Web3Service.getPrivateKeyFromSeed(seed);
       final ethAddr = await Web3Service.getPublicAddress(privateKey);
       final ethBal = await Web3Service.getBalance(ethAddr);
 
-      // 2. Initialize Bitcoin Data
       final btcAddr = await BitcoinService.getPublicAddress(seed);
       final btcBal = await BitcoinService.getBalance(seed);
       
@@ -502,7 +616,6 @@ class _Web3TabState extends State<Web3Tab> {
     setState(() { _isLoading = true; _errorMessage = null; });
     
     try {
-      // Test EVM Derivation first
       Web3Service.getPrivateKeyFromSeed(phrase);
       await _storage.write(key: 'web3_seed', value: phrase);
       await _initializeWalletData(phrase);
@@ -538,7 +651,6 @@ class _Web3TabState extends State<Web3Tab> {
           const Text('Web3 Wallet', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
           const SizedBox(height: 24),
           
-          // FIX: Added manual cancel button to the loading state
           if (_isLoading)
             Center(
               child: Padding(
@@ -569,7 +681,6 @@ class _Web3TabState extends State<Web3Tab> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // FIX: Replaced static error box with interactive dismissible Row
         if (_errorMessage != null)
           Container(
             padding: const EdgeInsets.all(14), 
@@ -581,7 +692,7 @@ class _Web3TabState extends State<Web3Tab> {
                 Expanded(child: Text(_errorMessage!, style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 13))),
                 const SizedBox(width: 8),
                 GestureDetector(
-                  onTap: () => setState(() => _errorMessage = null), // Instantly dismisses error
+                  onTap: () => setState(() => _errorMessage = null), 
                   child: const Icon(Icons.close, color: Color(0xFFFF8A80), size: 20),
                 )
               ],
