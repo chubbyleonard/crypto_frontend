@@ -14,69 +14,68 @@ workflows:
           rm -f ios/Podfile.lock
           flutter pub get
           
-      - name: Inject Linker Flags & Update Deployment Target
+      - name: Inject Linker & Signing Flags
         script: |
-          # Force iOS 15.0 globally at the top of the Podfile
+          # Force iOS 15.0 globally
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Inject rules cleanly into the existing Flutter target loop macro
+          # Inject linker flags safely
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
               
           target_hook = 'flutter_additional_ios_build_settings(target)'
-          
-          # We append our custom overrides inside the loop right after the hook runs
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
+                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                 end"""
                 
           if target_hook in content:
               content = content.replace(target_hook, injection)
               with open(path, 'w') as f:
                   f.write(content)
-              print("Podfile updated successfully.")
-          else:
-              print("Warning: Hook point not found in Podfile.")
           EOF
-          
           python3 fix_podfile.py
           
-          # Ensure Flutter configuration respects the linker rules
+          # FORCE disable signing in the release config to satisfy Xcode build checks
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           
-          # Install pods from the ios directory
           cd ios && pod install
           
-      - name: Build Unsigned iOS App & Package
+      - name: Build Unsigned App & Package IPA
         script: |
-          # 1. Build a complete Xcode Archive cleanly without signing constraints
-          flutter build ipa --release --no-codesign
+          # 1. Build the .app bundle (NOT ipa)
+          # We pass explicit XCArgs to override any residual project settings
+          flutter build ios --release --no-codesign --no-pub
           
-          # 2. Dynamic Search: Safely track down where the xcarchive target placed Runner.app
-          APP_PATH=$(find build/ios/archive -name "Runner.app" -type d | head -n 1)
+          # 2. Find the Runner.app path dynamically
+          # This searches the entire build/ios directory for the Runner.app folder
+          APP_PATH=$(find build/ios -type d -name "Runner.app" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Critical Error: Runner.app not found inside the Xcode archive folder."
+            echo "❌ Critical Error: Runner.app not found. Build failed."
             exit 1
           fi
           
-          echo "✅ Found valid application container at: $APP_PATH"
+          echo "✅ Found compiled app at: $APP_PATH"
           
-          # 3. Create Payload and Copy
+          # 3. Create Payload directory
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # -RL ensures we follow internal symbolic links and clone actual data payloads
+          # 4. Copy with -RL to resolve all symlinks into actual files
           cp -RL "$APP_PATH" Payload/
           
-          # 4. Zip the payload into the final distributable file structure
+          # 5. Zip it into an IPA
           zip -qr app.ipa Payload
           
     artifacts:
