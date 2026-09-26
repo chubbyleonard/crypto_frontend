@@ -7,25 +7,26 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Clean & Fetch
+      - name: Clean Workspace
         script: |
           set -e
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
           
-      - name: Disable Xcode Signing & Inject BDK Flags
+      - name: Inject BDK Flags & Surgically Patch Xcode Project
         script: |
           set -e
+          
+          # 1. Update minimum iOS deployment target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # Inject Linker Flags and DISABLE signing so Xcode doesn't crash on pre-flight
+          # 2. Inject Rust Web3 Linker Flags (Prevents the FFI Crash)
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
-              
           target_hook = 'flutter_additional_ios_build_settings(target)'
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
@@ -33,13 +34,7 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
-                  
-                  # CRITICAL: We MUST set these to NO to bypass the certificate crash
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGN_IDENTITY'] = ''
                 end"""
-                
           if target_hook in content:
               content = content.replace(target_hook, injection)
               with open(path, 'w') as f:
@@ -47,11 +42,30 @@ workflows:
           EOF
           python3 fix_podfile.py
           
-          # Force the overrides in Flutter's native config file as a backup
-          echo "CODE_SIGNING_ALLOWED = NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_REQUIRED = NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGN_IDENTITY = " >> ios/Flutter/Release.xcconfig
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
+          # 3. THE NUCLEAR OPTION: Hack the root project file
+          # This completely lobotomizes Apple's certificate checks before Flutter even boots up.
+          cat << 'EOF' > patch_xcode.py
+          import re
+          path = 'ios/Runner.xcodeproj/project.pbxproj'
+          with open(path, 'r') as f:
+              c = f.read()
+              
+          # Strip all Apple Development Team references
+          c = re.sub(r'DEVELOPMENT_TEAM = [^;]*;', '', c)
+          c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
+          c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
+          
+          # Force Ad-Hoc signature (the '-' identity) instead of a real Apple profile
+          c = re.sub(r'CODE_SIGN_IDENTITY = [^;]*;', 'CODE_SIGN_IDENTITY = "-";', c)
+          c = re.sub(r'"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = [^;]*;', '"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "-";', c)
+          
+          # Force Xcode to ALLOW signing so your native frameworks are actually embedded (Fixes 448B bug)
+          c = re.sub(r'CODE_SIGNING_ALLOWED = [^;]*;', 'CODE_SIGNING_ALLOWED = YES;', c)
+          
+          with open(path, 'w') as f:
+              f.write(c)
+          EOF
+          python3 patch_xcode.py
           
       - name: Install pods
         script: |
@@ -59,57 +73,42 @@ workflows:
           cd ios
           pod install --repo-update
           
-      - name: Compile and Manually Assemble Frameworks
+      - name: Build Ad-Hoc iOS App & Package
         script: |
           set -e
           
-          # 1. Compile the physical device binaries.
-          # The NO flags above + --no-codesign guarantee this will NOT crash on certificates.
-          echo "🚀 Compiling raw unsigned binaries..."
-          flutter build ios --release --no-codesign
+          # 1. Build the app. We DO NOT use --no-codesign here!
+          # Flutter will read our hacked project file, apply the Ad-Hoc signature, and embed the frameworks cleanly.
+          echo "🚀 Compiling full device bundle with Ad-Hoc identity..."
+          flutter build ios --release
           
-          APP_PATH="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_PATH" ]; then
-            # Dynamic fallback for different Codemagic output folders
-            APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
-          fi
+          # 2. Locate the fully assembled bundle
+          APP_PATH=$(find build/ios -type d -name "Runner.app" | grep "iphoneos" | head -n 1)
           
-          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "❌ Critical Error: Compiled Runner.app shell not found."
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Critical Error: Runner.app not found."
             exit 1
           fi
           
-          echo "✅ Found app shell at: $APP_PATH"
+          echo "✅ Found assembled app at: $APP_PATH"
+          du -sh "$APP_PATH"
           
-          # 2. Setup Sideloadly Payload structure
+          # 3. FAILSAFE: Physically drag any abandoned frameworks into the app just in case Xcode glitches
+          echo "🛠 Ensuring all native frameworks are embedded..."
+          mkdir -p "$APP_PATH/Frameworks"
+          find build/ios/Release-iphoneos -maxdepth 1 -type d -name "*.framework" -exec cp -a {} "$APP_PATH/Frameworks/" \; 2>/dev/null || true
+          
+          # 4. Apply a final, deep Ad-Hoc signature to the entire payload to authenticate the frameworks
+          echo "🔨 Applying deep Ad-Hoc signature..."
+          codesign --force --deep --sign - "$APP_PATH"
+          
+          # 5. Create Payload and package with ditto to preserve Apple metadata
           rm -rf Payload app.ipa
-          mkdir -p Payload/Runner.app
+          mkdir -p Payload
+          ditto "$APP_PATH" Payload/Runner.app
+          ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
           
-          # 3. Copy the base app shell (-a preserves Apple's internal metadata)
-          cp -a "$APP_PATH/"* Payload/Runner.app/
-          
-          # 4. THE FIX: Manually embed the frameworks Xcode refused to embed
-          echo "🛠 Gathering and embedding native frameworks..."
-          mkdir -p Payload/Runner.app/Frameworks
-          
-          # Force-copy all native Pod frameworks (bdk_flutter, Web3, etc.) from Xcode's intermediate folder
-          if [ -d "build/ios/Release-iphoneos" ]; then
-            find build/ios/Release-iphoneos -maxdepth 1 -name "*.framework" -exec cp -a {} Payload/Runner.app/Frameworks/ \;
-          fi
-          
-          # Force-copy Flutter's core framework
-          if [ -d "ios/Flutter/Flutter.framework" ]; then
-            cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/
-          fi
-          
-          # 5. Apply Ad-Hoc signature deep into our manually assembled bundle
-          echo "🔨 Applying deep Ad-Hoc signature to authenticated frameworks..."
-          codesign --force --deep --sign - Payload/Runner.app
-          
-          # 6. Zip into the final IPA
-          zip -r -q app.ipa Payload
-          
-          echo "📦 Final Assembled Sideload IPA Size:"
+          echo "📦 Final IPA Size:"
           ls -lh app.ipa
           
     artifacts:
