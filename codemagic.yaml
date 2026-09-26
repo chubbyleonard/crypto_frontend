@@ -20,7 +20,7 @@ workflows:
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Inject linker flags safely
+          # Inject linker flags safely for BDK Rust bindings
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -56,27 +56,30 @@ workflows:
           # 1. Build the .app bundle
           flutter build ios --release --no-codesign --no-pub
           
-          # 2. Hardcode the exact paths instead of guessing
-          if [ -d "build/ios/iphoneos/Runner.app" ]; then
-            APP_PATH="build/ios/iphoneos/Runner.app"
-          elif [ -d "build/ios/Release-iphoneos/Runner.app" ]; then
-            APP_PATH="build/ios/Release-iphoneos/Runner.app"
-          else
-            echo "❌ Critical Error: Real Runner.app not found."
+          echo "🔍 Scanning system for the largest compiled Runner.app binary..."
+          
+          # 2. Search the workspace and Xcode's hidden DerivedData caches.
+          # This calculates the size of all matching folders and strictly selects the largest one, bypassing empty shells.
+          APP_PATH=$(find . ~/Library/Developer/Xcode/DerivedData -type d -name "Runner.app" -exec du -sk {} + 2>/dev/null | sort -nr | head -n 1 | cut -f2-)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Critical Error: No Runner.app found anywhere on the machine."
             exit 1
           fi
           
-          echo "✅ Found actual compiled app at: $APP_PATH"
+          # Print the size to the build logs to verify we grabbed the ~50MB file
+          APP_SIZE=$(du -sh "$APP_PATH" | awk '{print $1}')
+          echo "✅ Packaging authentic app from: $APP_PATH"
+          echo "📊 Verified App Size: $APP_SIZE"
           
           # 3. Create Payload directory
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # 4. Use Apple's native 'ditto' tool to clone the bundle perfectly
-          # This copies all internal frameworks and metadata safely
+          # 4. Safely clone the massive app bundle
           ditto "$APP_PATH" Payload/Runner.app
           
-          # 5. Zip the folder into an IPA using ditto instead of standard zip
+          # 5. Zip the folder into an IPA
           ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
           
     artifacts:
