@@ -13,11 +13,14 @@ workflows:
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
 
-      - name: Inject BDK Linker Flags
+      - name: Inject BDK Linker Flags (No Signing Overrides)
         script: |
+          # Set minimum iOS version globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
+          # Inject ONLY the Rust BDK linker flags to prevent the FFI crash.
+          # We are explicitly NOT overriding CODE_SIGNING here so Flutter's embed script runs.
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -39,6 +42,7 @@ workflows:
           EOF
           python3 fix_podfile.py
           
+          # Append strictly linker flags to Flutter's native config
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
 
@@ -49,37 +53,30 @@ workflows:
 
       - name: Build, Sign Ad-Hoc & Package
         script: |
-          # 1. Prepare Flutter build artifacts without letting Flutter's Xcode wrapper abort on signing
-          flutter build ios --config-only --release
+          # 1. Let Flutter handle the unsigned build natively so frameworks are actually embedded
+          flutter build ios --release --no-codesign
 
-          # 2. Build the actual Runner.app directly using xcodebuild
-          cd ios
-          xcodebuild -workspace Runner.xcworkspace \
-                     -scheme Runner \
-                     -configuration Release \
-                     -sdk iphoneos \
-                     -derivedDataPath ../build/DerivedData \
-                     CODE_SIGNING_ALLOWED=NO \
-                     CODE_SIGNING_REQUIRED=NO \
-                     CODE_SIGN_IDENTITY="" \
-                     build
-          cd ..
-
-          # 3. Locate the freshly generated full Runner.app inside the derived data
-          APP_PATH=$(find build/DerivedData -type d -name "Runner.app" | head -n 1)
+          # 2. Safely locate the fully compiled bundle
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH=$(find build/ios -type d -name "Runner.app" | grep -v "archive" | head -n 1)
+          fi
 
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "❌ Critical Error: Runner.app not found in build/DerivedData"
+            echo "❌ Critical Error: Runner.app not found."
             exit 1
           fi
 
+          # This will now print ~50MB instead of a few bytes
           echo "✅ Found app at: $APP_PATH"
           du -sh "$APP_PATH"
 
-          # 4. Ad-Hoc sign the full bundle
+          # 3. Apply Ad-Hoc signature deep into the fully assembled bundle
+          echo "🔨 Applying deep Ad-Hoc signature..."
           codesign --force --deep --sign - "$APP_PATH"
 
-          # 5. Package into IPA for Sideloadly
+          # 4. Package using ditto to preserve Apple bundle structure
           rm -rf Payload app.ipa
           mkdir -p Payload
           ditto "$APP_PATH" Payload/Runner.app
