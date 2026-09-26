@@ -14,13 +14,13 @@ workflows:
           rm -f ios/Podfile.lock
           flutter pub get
           
-      - name: Inject Linker & Signing Flags
+      - name: Inject Linker & Ad-Hoc Signing Flags
         script: |
           # Force iOS 15.0 globally
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Inject linker flags safely for BDK Rust bindings
+          # Inject linker flags and force Ad-Hoc signing
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -33,8 +33,11 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
+                  
+                  # Enable Signing but force a dummy Ad-Hoc identity (-)
+                  config.build_settings['CODE_SIGN_IDENTITY'] = '-'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'YES'
                 end"""
                 
           if target_hook in content:
@@ -44,42 +47,52 @@ workflows:
           EOF
           python3 fix_podfile.py
           
-          # FORCE disable signing in the release config to satisfy Xcode build checks
+          # Inject Ad-Hoc rules into Flutter's native config
+          echo "CODE_SIGN_IDENTITY=-" >> ios/Flutter/Release.xcconfig
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_ALLOWED=YES" >> ios/Flutter/Release.xcconfig
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           
           cd ios && pod install
           
-      - name: Build Unsigned App & Package IPA
+      - name: Build Ad-Hoc iOS App & Package IPA
         script: |
-          # 1. Build the .app bundle
-          flutter build ios --release --no-codesign --no-pub
+          # 1. Compile Dart code and generate initial iOS structures
+          flutter build ios --release --no-codesign
           
-          echo "🔍 Scanning system for the largest compiled Runner.app binary..."
+          echo "🔨 Forcing Xcode to assemble binary with Ad-Hoc signature..."
           
-          # 2. Search the workspace and Xcode's hidden DerivedData caches.
-          # This calculates the size of all matching folders and strictly selects the largest one, bypassing empty shells.
-          APP_PATH=$(find . ~/Library/Developer/Xcode/DerivedData -type d -name "Runner.app" -exec du -sk {} + 2>/dev/null | sort -nr | head -n 1 | cut -f2-)
+          # 2. Run a direct Xcode build to force the framework embedding phase
+          # The identity "-" signs the app locally without needing a developer account
+          cd ios
+          xcodebuild -workspace Runner.xcworkspace \
+                     -scheme Runner \
+                     -configuration Release \
+                     -sdk iphoneos \
+                     SYMROOT="$(PWD)/../build/ios" \
+                     CODE_SIGN_IDENTITY="-" \
+                     CODE_SIGNING_REQUIRED="NO" \
+                     CODE_SIGNING_ALLOWED="YES" \
+                     build
+                     
+          cd ..
+          
+          # 3. Locate the freshly assembled Ad-Hoc app
+          APP_PATH=$(find build/ios -type d -name "Runner.app" -exec du -sk {} + 2>/dev/null | sort -nr | head -n 1 | cut -f2-)
           
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Critical Error: No Runner.app found anywhere on the machine."
+            echo "❌ Critical Error: Runner.app not found."
             exit 1
           fi
           
-          # Print the size to the build logs to verify we grabbed the ~50MB file
           APP_SIZE=$(du -sh "$APP_PATH" | awk '{print $1}')
           echo "✅ Packaging authentic app from: $APP_PATH"
           echo "📊 Verified App Size: $APP_SIZE"
           
-          # 3. Create Payload directory
+          # 4. Package for Sideloadly using Apple ditto
           rm -rf Payload app.ipa
           mkdir -p Payload
-          
-          # 4. Safely clone the massive app bundle
           ditto "$APP_PATH" Payload/Runner.app
-          
-          # 5. Zip the folder into an IPA
           ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
           
     artifacts:
