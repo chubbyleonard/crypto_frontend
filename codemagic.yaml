@@ -7,22 +7,39 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Clean Workspace & Fetch Packages
+      - name: Clean & Fetch Packages
         script: |
           set -e
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
           
-      - name: Inject BDK Linker Flags (NO SIGNING HACKS)
+      - name: Lobotomize Apple Certificate Checks & Inject BDK Flags
         script: |
           set -e
-          # Force iOS 15.0 Deployment Target
+          
+          # 1. THE CATCH-22 FIX: Strip the Development Team ID from the root Xcode project.
+          # This permanently prevents Xcode from phoning home to Apple during --no-codesign builds.
+          cat << 'EOF' > patch_xcode.py
+          import re
+          path = 'ios/Runner.xcodeproj/project.pbxproj'
+          with open(path, 'r') as f:
+              c = f.read()
+              
+          c = re.sub(r'DEVELOPMENT_TEAM = [^;]*;', '', c)
+          c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
+          c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
+          
+          with open(path, 'w') as f:
+              f.write(c)
+          EOF
+          python3 patch_xcode.py
+          
+          # 2. Force iOS 15.0 Deployment Target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # Inject ONLY the linker flags to fix the Web3 FFI crash.
-          # We are explicitly NOT injecting CODE_SIGNING overrides here.
+          # 3. Inject BDK Linker Flags and disable signing on all CocoaPods
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -35,6 +52,11 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
+                  
+                  # Disable signing on CocoaPods
+                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                  config.build_settings['CODE_SIGN_IDENTITY'] = ''
                 end"""
                 
           if target_hook in content:
@@ -44,51 +66,63 @@ workflows:
           EOF
           python3 fix_podfile.py
           
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
-          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
-          
       - name: Install Pods
         script: |
           set -e
           cd ios
           pod install --repo-update
           
-      - name: Build Unsigned App
+      - name: Build & Assemble Final IPA
         script: |
           set -e
-          # The --no-codesign flag tells Flutter to bypass the Apple Developer check,
-          # but because we didn't inject the poison pill, Xcode WILL embed the frameworks.
-          echo "🚀 Compiling full unsigned device bundle..."
+          
+          # 1. Compile the physical device binaries. 
+          # --no-codesign stops Flutter from crashing. The patched pbxproj stops Xcode from crashing.
+          echo "🚀 Compiling raw unsigned binaries..."
           flutter build ios --release --no-codesign
           
-      - name: Deep Sign & Package IPA
-        script: |
-          set -e
-          
-          APP_PATH="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_PATH" ]; then
-            APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
+          # 2. Locate the compiled build directory
+          APP_DIR="build/ios/iphoneos"
+          if [ ! -d "$APP_DIR/Runner.app" ]; then
+            APP_DIR="build/ios/Release-iphoneos"
           fi
           
-          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "❌ Critical Error: Compiled Runner.app not found."
+          if [ ! -d "$APP_DIR/Runner.app" ]; then
+            echo "❌ Critical Error: Compiled app shell not found."
             exit 1
           fi
           
-          echo "✅ Found fully assembled app at: $APP_PATH"
-          du -sh "$APP_PATH"
+          echo "✅ Found compiled data in: $APP_DIR"
           
-          # Deep Ad-Hoc sign the app to authenticate Web3 bindings natively
-          echo "🔨 Applying local Ad-Hoc signature..."
-          codesign --force --deep --sign - "$APP_PATH"
-          
-          # Package cleanly using ditto
+          # 3. Setup Sideloadly Payload structure
           rm -rf Payload app.ipa
-          mkdir -p Payload
-          ditto "$APP_PATH" Payload/Runner.app
-          ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
+          mkdir -p Payload/Runner.app
           
-          echo "📦 Final IPA Size (Should be ~40MB+):"
+          # 4. Copy the base app shell (-a preserves Apple's internal metadata)
+          cp -a "$APP_DIR/Runner.app/"* Payload/Runner.app/
+          
+          # 5. THE 448-BYTE FIX: Manually embed the frameworks Xcode abandoned
+          echo "🛠 Gathering and embedding native frameworks..."
+          mkdir -p Payload/Runner.app/Frameworks
+          
+          # Find all compiled frameworks in the build directory and physically copy them inside the app
+          find build/ios -path "*/Release-iphoneos/*.framework" -type d | grep -v "Runner.app" | while read fw; do
+            cp -a "$fw" Payload/Runner.app/Frameworks/ || true
+          done
+          
+          # Ensure Flutter's core framework is also transferred
+          if [ -d "ios/Flutter/Flutter.framework" ]; then
+            cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/ || true
+          fi
+          
+          # 6. Apply Ad-Hoc signature deep into our manually assembled bundle to authenticate the Web3 Rust binaries
+          echo "🔨 Applying deep Ad-Hoc signature..."
+          codesign --force --deep --sign - Payload/Runner.app
+          
+          # 7. Zip into the final IPA
+          zip -r -q app.ipa Payload
+          
+          echo "📦 Final Assembled Sideload IPA Size (Should be 40MB+):"
           ls -lh app.ipa
           
     artifacts:
