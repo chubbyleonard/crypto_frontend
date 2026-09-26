@@ -1,4 +1,3 @@
-```yaml
 workflows:
   ios-sideload-workflow:
     name: iOS Sideloadly Release
