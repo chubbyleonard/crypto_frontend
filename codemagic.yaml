@@ -1,24 +1,109 @@
-- name: Build Unsigned iOS App & Package
+workflows:
+  ios-sideload-workflow:
+    name: iOS Sideloadly Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: Clean & Setup Environment
         script: |
-          # 1. Build standard release without signing to bypass the Xcode archive block
+          flutter clean
+          rm -rf ios/Pods ios/Podfile.lock
+          flutter pub get
+          
+      - name: Configure Signing & Linking Rules
+        script: |
+          # 1. Force iOS 15.0 Deployment Target
+          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          
+          # 2. Inject Build Settings (Disable Signing & Bitcode, Fix Linking)
+          cat << 'EOF' > fix_podfile.py
+          import os
+
+          path = 'ios/Podfile'
+          if os.path.exists(path):
+              with open(path, 'r') as f:
+                  content = f.read()
+              
+              target_hook = 'flutter_additional_ios_build_settings(target)'
+              injection = """flutter_additional_ios_build_settings(target)
+                    target.build_configurations.each do |config|
+                      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+                      config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
+                      config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+                      config.build_settings['STRIP_STYLE'] = 'non-global'
+                      config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                      config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                      config.build_settings['ENABLE_BITCODE'] = 'NO'
+                    end"""
+                    
+              if target_hook in content:
+                  content = content.replace(target_hook, injection)
+                  with open(path, 'w') as f:
+                      f.write(content)
+                  print("✅ Podfile patched successfully.")
+              else:
+                  print("⚠️ Warning: Target hook not found in Podfile.")
+          else:
+              print("❌ Error: ios/Podfile not found.")
+          EOF
+          
+          python3 fix_podfile.py
+          
+          # 3. Apply overrides to Flutter's generated config as a backup
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
+          echo "ENABLE_BITCODE=NO" >> ios/Flutter/Release.xcconfig
+          
+          # 4. Install Pods
+          cd ios && pod install
+          
+      - name: Build & Package IPA
+        script: |
+          # 1. Build the iOS app bundle (NOT IPA) to bypass archive signing checks
+          # We explicitly use the Release configuration.
           flutter build ios --release --no-codesign
           
-          # 2. Dynamic Search: Find the actual Runner.app path
+          # 2. Locate the App Bundle
+          # We look for the one specifically in the "iphoneos" folder to avoid Simulator builds
           APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Error: Runner.app not found. Build failed."
+            echo "❌ CRITICAL: Build failed. Runner.app was not created."
             exit 1
           fi
           
-          echo "✅ Found app at: $APP_PATH"
+          echo "✅ Build success. App found at: $APP_PATH"
           
-          # 3. Create Payload and Copy
+          # 3. Verify & Fix Frameworks (The Crash Fix)
+          # We ensure frameworks are embedded. If missing, we force the embedder.
+          FRAMEWORKS_DIR="$APP_PATH/Frameworks"
+          
+          if [ ! -d "$FRAMEWORKS_DIR" ]; then
+             echo "⚠️ Frameworks folder missing. Running manual embed..."
+             
+             # Set required env vars for the script
+             export TARGET_BUILD_DIR="$(dirname "$APP_PATH")"
+             export FRAMEWORKS_FOLDER_PATH="Runner.app/Frameworks"
+             export ACTION="install" 
+             
+             # Source the Flutter env to get FLUTTER_ROOT
+             source ios/Flutter/flutter_export_environment.sh
+             
+             # Run the backend script with the correct 'embed' subcommand
+             "$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh" embed
+          else
+             echo "✅ Frameworks directory already exists. Skipping manual embed."
+          fi
+          
+          # 4. Package
           rm -rf Payload app.ipa
           mkdir -p Payload
-          
-          # -RL ensures we follow symlinks and copy actual binary data
           cp -RL "$APP_PATH" Payload/
-          
-          # 4. Zip it into the final IPA
           zip -qr app.ipa Payload
+          
+    artifacts:
+      - app.ipa
