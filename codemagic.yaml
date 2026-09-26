@@ -9,17 +9,19 @@ workflows:
     scripts:
       - name: Get packages & clean
         script: |
+          set -e # Exit immediately if any command fails
           flutter clean
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
           
       - name: Inject BDK Linker Flags
         script: |
+          set -e
           # Set minimum iOS version globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # Inject Rust BDK linker flags to prevent the Web3 FFI crash
+          # Inject Rust BDK linker flags
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -46,50 +48,66 @@ workflows:
           
       - name: Install pods
         script: |
+          set -e
           cd ios
           pod install --repo-update
           
       - name: Force Device Build & Package
         script: |
-          # 1. Generate Dart AOT and plugin registries (no native compilation yet)
+          set -e
+          
+          # 1. Generate Dart AOT
           flutter build ios --config-only --release
           
-          # 2. Force a PHYSICAL DEVICE compile natively via Xcode
-          # The '-sdk iphoneos' flag completely blocks the Simulator fallback crash
+          # 2. Define ABSOLUTE paths to prevent "cd" confusion
+          PROJECT_ROOT=$(pwd)
+          IOS_BUILD_DIR="$PROJECT_ROOT/build/ios"
+          APP_OUTPUT_PATH="$IOS_BUILD_DIR/Release-iphoneos/Runner.app"
+          
+          echo "📍 Building into: $IOS_BUILD_DIR"
+          
+          # 3. Force Native Compilation
           cd ios
           xcodebuild -workspace Runner.xcworkspace \
                      -scheme Runner \
                      -configuration Release \
                      -sdk iphoneos \
-                     SYMROOT="$(PWD)/../build/ios" \
+                     SYMROOT="$IOS_BUILD_DIR" \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
                      build
-                     
-          cd ..
           
-          # 3. Hardcode the EXACT deterministic path. NO MORE FIND COMMANDS.
-          APP_PATH="build/ios/Release-iphoneos/Runner.app"
+          cd "$PROJECT_ROOT"
           
-          if [ ! -d "$APP_PATH" ]; then
-            echo "❌ Critical Error: Xcode failed to generate the physical device binary."
+          # 4. SAFETY CHECK: Ensure the .app actually exists and has content
+          if [ ! -d "$APP_OUTPUT_PATH" ]; then
+            echo "❌ CRITICAL ERROR: Runner.app was not found at $APP_OUTPUT_PATH"
+            echo "Listing build directory for debugging:"
+            ls -R build/ios
             exit 1
           fi
           
-          echo "✅ Authentic Native App Found At: $APP_PATH"
-          du -sh "$APP_PATH"
+          # Check if the binary is inside (prevents empty folder zipping)
+          if [ ! -f "$APP_OUTPUT_PATH/Runner" ]; then
+             echo "❌ CRITICAL ERROR: Runner binary missing inside the app bundle."
+             exit 1
+          fi
           
-          # 4. Apply Ad-Hoc signature so the internal frameworks are authenticated
-          codesign --force --deep --sign - "$APP_PATH"
+          echo "✅ Valid App Bundle found. Size:"
+          du -sh "$APP_OUTPUT_PATH"
           
-          # 5. Cleanly package into Sideloadly IPA using Apple's ditto
+          # 5. Sign & Package
+          codesign --force --deep --sign - "$APP_OUTPUT_PATH"
+          
           rm -rf Payload app.ipa
           mkdir -p Payload
-          ditto "$APP_PATH" Payload/Runner.app
+          
+          # Use -v to verify files are actually copying
+          ditto -v "$APP_OUTPUT_PATH" Payload/Runner.app
           ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
           
-          echo "📊 Final Artifact Size:"
+          echo "🎁 Final IPA Created:"
           ls -lh app.ipa
           
     artifacts:
