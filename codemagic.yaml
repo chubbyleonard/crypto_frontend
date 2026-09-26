@@ -20,24 +20,20 @@ workflows:
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # 2. Append a robust post_install script to the Podfile to inject linker flags dynamically
-          cat << 'EOF' >> ios/Podfile
-
-post_install do |installer|
-  installer.pods_project.targets.each do |target|
-    target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-      # Force load all static binary symbols to prevent stripping
-      config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
-      config.build_settings['OTHER_LDFLAGS'] << '-all_load'
-      # Turn off dead code stripping for maximum compliance
-      config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
-      config.build_settings['STRIP_STYLE'] = 'non-global'
-    end
-  end
-end
-EOF
-
+          # 2. Append the post_install script safely using single-quotes to protect special characters
+          echo "" >> ios/Podfile
+          echo 'post_install do |installer|' >> ios/Podfile
+          echo '  installer.pods_project.targets.each do |target|' >> ios/Podfile
+          echo '    target.build_configurations.each do |config|' >> ios/Podfile
+          echo "      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'" >> ios/Podfile
+          echo "      config.build_settings['OTHER_LDFLAGS'] ||= ['\$(inherited)']" >> ios/Podfile
+          echo "      config.build_settings['OTHER_LDFLAGS'] << '-all_load'" >> ios/Podfile
+          echo "      config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'" >> ios/Podfile
+          echo "      config.build_settings['STRIP_STYLE'] = 'non-global'" >> ios/Podfile
+          echo '    end' >> ios/Podfile
+          echo '  end' >> ios/Podfile
+          echo 'end' >> ios/Podfile
+          
           # 3. Fallback: Also append to the Flutter environment configuration files
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Debug.xcconfig
