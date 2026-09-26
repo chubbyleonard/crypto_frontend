@@ -1,71 +1,27 @@
-workflows:
-  ios-sideload-workflow:
-    name: iOS Sideloadly Release
-    max_build_duration: 60
-    instance_type: mac_mini_m2
-    environment:
-      flutter: stable
-      xcode: latest
-    scripts:
-      - name: Clean Workspace & Get Packages
+- name: Build Unsigned App & Package IPA
         script: |
-          flutter clean
-          rm -rf ios/Pods
-          rm -f ios/Podfile.lock
-          flutter pub get
+          # 1. Build the .app bundle
+          flutter build ios --release --no-codesign --no-pub
           
-      - name: Inject Linker Flags & Update Deployment Target
-        script: |
-          # Force iOS 15.0 globally at the top of the Podfile
-          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
-          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          # 2. Hardcode the exact paths
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            APP_PATH="build/ios/iphoneos/Runner.app"
+          elif [ -d "build/ios/Release-iphoneos/Runner.app" ]; then
+            APP_PATH="build/ios/Release-iphoneos/Runner.app"
+          else
+            echo "❌ Critical Error: Real Runner.app not found."
+            exit 1
+          fi
           
-          # Inject rules *safely* inside the loop without deleting Flutter's core macro
-          cat << 'EOF' > fix_podfile.py
-          path = 'ios/Podfile'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          target_hook = 'flutter_additional_ios_build_settings(target)'
-          injection = """flutter_additional_ios_build_settings(target)
-                target.build_configurations.each do |config|
-                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
-                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
-                  config.build_settings['STRIP_STYLE'] = 'non-global'
-                end"""
-                
-          if target_hook in content:
-              content = content.replace(target_hook, injection)
-              with open(path, 'w') as f:
-                  f.write(content)
-              print("Podfile updated successfully.")
-          else:
-              print("Warning: Hook point not found in Podfile.")
-          EOF
+          echo "✅ Found actual compiled app at: $APP_PATH"
           
-          python3 fix_podfile.py
-          
-          # Ensure Flutter configuration respects the linker rules
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
-          
-          # Install pods from the ios directory
-          cd ios && pod install
-          
-      - name: Build Unsigned iOS App & Package
-        script: |
-          # Build standard release without signing
-          flutter build ios --release --no-codesign
-          
-          # Prepare the payload folder structure required for an IPA
+          # 3. Create Payload directory
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # Copy the compiled application bundle
-          cp -R build/ios/Release-iphoneos/Runner.app Payload/
+          # 4. Use Apple's native 'ditto' tool to clone the bundle perfectly
+          # This resolves the 520B issue by preserving all internal frameworks
+          ditto "$APP_PATH" Payload/Runner.app
           
-          # Zip the final bundle into an IPA
-          zip -qr app.ipa Payload
-          
-    artifacts:
-      - app.ipa
+          # 5. Zip the folder into an IPA using ditto instead of standard zip
+          ditto -c -k --sequesterRsrc --keepParent Payload app.ipa
