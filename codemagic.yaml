@@ -1,82 +1,35 @@
-workflows:
-  ios-sideload-workflow:
-    name: iOS Sideloadly Release
-    max_build_duration: 60
-    instance_type: mac_mini_m2
-    environment:
-      flutter: stable
-      xcode: latest
-    scripts:
-      - name: Clean Workspace & Get Packages
+- name: Build Unsigned iOS App & Package
         script: |
-          flutter clean
-          rm -rf ios/Pods
-          rm -f ios/Podfile.lock
-          flutter pub get
+          # 1. Build standard release without signing to bypass the Xcode archive block
+          flutter build ios --release --no-codesign
           
-      - name: Inject Linker & Signing Flags
-        script: |
-          # Force iOS 15.0 globally
-          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
-          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
-          
-          # Inject linker flags safely
-          cat << 'EOF' > fix_podfile.py
-          path = 'ios/Podfile'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          target_hook = 'flutter_additional_ios_build_settings(target)'
-          injection = """flutter_additional_ios_build_settings(target)
-                target.build_configurations.each do |config|
-                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
-                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
-                  config.build_settings['STRIP_STYLE'] = 'non-global'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                end"""
-                
-          if target_hook in content:
-              content = content.replace(target_hook, injection)
-              with open(path, 'w') as f:
-                  f.write(content)
-          EOF
-          python3 fix_podfile.py
-          
-          # FORCE disable signing in the release config to satisfy Xcode build checks
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Release.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Release.xcconfig
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
-          
-          cd ios && pod install
-          
-      - name: Build Unsigned App & Package IPA
-        script: |
-          # 1. Build the .app bundle (NOT ipa)
-          # We pass explicit XCArgs to override any residual project settings
-          flutter build ios --release --no-codesign --no-pub
-          
-          # 2. Find the Runner.app path dynamically
-          # This searches the entire build/ios directory for the Runner.app folder
-          APP_PATH=$(find build/ios -type d -name "Runner.app" | head -n 1)
+          # 2. Dynamic Search: Find the actual Runner.app path
+          APP_PATH=$(find build/ios -name "Runner.app" -type d | grep "iphoneos" | head -n 1)
           
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Critical Error: Runner.app not found. Build failed."
+            echo "❌ Error: Runner.app not found. Build failed."
             exit 1
           fi
           
-          echo "✅ Found compiled app at: $APP_PATH"
+          echo "✅ Found app at: $APP_PATH"
           
-          # 3. Create Payload directory
+          # 3. CRITICAL: Force Flutter to embed frameworks manually into the .app folder
+          # Without this, plugins will cause immediate crashes on sideloaded launches
+          echo "Embeding plugin frameworks manually..."
+          export BUILT_PRODUCTS_DIR="$(dirname "$APP_PATH")"
+          export FRAMEWORKS_FOLDER_PATH="Runner.app/Frameworks"
+          if [ -f "ios/Flutter/flutter_export_environment.sh" ]; then
+            source ios/Flutter/flutter_export_environment.sh
+            # Execute Flutter's internal framework embedding tool
+            "$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh" embed_frameworks
+          fi
+          
+          # 4. Create Payload and Copy
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # 4. Copy with -RL to resolve all symlinks into actual files
+          # -RL ensures we follow symlinks and copy actual binary data
           cp -RL "$APP_PATH" Payload/
           
-          # 5. Zip it into an IPA
+          # 5. Zip it into the final IPA
           zip -qr app.ipa Payload
-          
-    artifacts:
-      - app.ipa
