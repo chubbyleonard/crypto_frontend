@@ -14,51 +14,57 @@ workflows:
           rm -f ios/Podfile.lock
           flutter pub get
           
-      - name: Inject Linker Flags into EXISTING Podfile Loop
+      - name: Inject Linker Flags & Update Deployment Target
         script: |
-          # Force iOS 15 Deployment Target
+          # Force iOS 15.0 globally at the top of the Podfile
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Safely inject rules directly into Flutter's default block using Python
+          # Inject rules *safely* inside the loop without deleting Flutter's core macro
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
               
+          target_hook = 'flutter_additional_ios_build_settings(target)'
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
-                  config.build_settings['OTHER_LDFLAGS'] << '-all_load'
+                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
                 end"""
                 
-          content = content.replace('flutter_additional_ios_build_settings(target)', injection)
-          with open(path, 'w') as f:
-              f.write(content)
+          if target_hook in content:
+              content = content.replace(target_hook, injection)
+              with open(path, 'w') as f:
+                  f.write(content)
+              print("Podfile updated successfully.")
+          else:
+              print("Warning: Hook point not found in Podfile.")
           EOF
           
           python3 fix_podfile.py
           
-          # Apply the linker flag to the Flutter environment configuration file
+          # Ensure Flutter configuration respects the linker rules
           echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           
-          # Run pod install
+          # Install pods from the ios directory
           cd ios && pod install
           
       - name: Build Unsigned iOS App & Package
         script: |
-          # Build standard release
+          # Build standard release without signing
           flutter build ios --release --no-codesign
           
+          # Prepare the payload folder structure required for an IPA
+          rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # BYPASS THE SYMLINK. Copy the real 50MB app bundle directly from Xcode's true output folder.
+          # Copy the compiled application bundle
           cp -R build/ios/Release-iphoneos/Runner.app Payload/
           
-          # Zip the final IPA
+          # Zip the final bundle into an IPA
           zip -qr app.ipa Payload
           
     artifacts:
