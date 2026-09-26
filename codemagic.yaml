@@ -20,13 +20,15 @@ workflows:
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-          # Inject rules *safely* inside the loop without deleting Flutter's core macro
+          # Inject rules cleanly into the existing Flutter target loop macro
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
               
           target_hook = 'flutter_additional_ios_build_settings(target)'
+          
+          # We append our custom overrides inside the loop right after the hook runs
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
@@ -54,17 +56,27 @@ workflows:
           
       - name: Build Unsigned iOS App & Package
         script: |
-          # Build standard release without signing
-          flutter build ios --release --no-codesign
+          # 1. Build a complete Xcode Archive cleanly without signing constraints
+          flutter build ipa --release --no-codesign
           
-          # Prepare the payload folder structure required for an IPA
+          # 2. Dynamic Search: Safely track down where the xcarchive target placed Runner.app
+          APP_PATH=$(find build/ios/archive -name "Runner.app" -type d | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Critical Error: Runner.app not found inside the Xcode archive folder."
+            exit 1
+          fi
+          
+          echo "✅ Found valid application container at: $APP_PATH"
+          
+          # 3. Create Payload and Copy
           rm -rf Payload app.ipa
           mkdir -p Payload
           
-          # FORCE FOLLOW SYMLINK (-RL) to copy the actual app data, not the shortcut
-          cp -RL build/ios/Release-iphoneos/Runner.app Payload/
+          # -RL ensures we follow internal symbolic links and clone actual data payloads
+          cp -RL "$APP_PATH" Payload/
           
-          # Zip the final bundle into an IPA
+          # 4. Zip the payload into the final distributable file structure
           zip -qr app.ipa Payload
           
     artifacts:
