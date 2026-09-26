@@ -13,23 +13,12 @@
           
           echo "✅ Found app at: $APP_PATH"
           
-          # 3. CRITICAL: Force Flutter to embed frameworks manually into the .app folder
-          # Without this, plugins will cause immediate crashes on sideloaded launches
-          echo "Embeding plugin frameworks manually..."
-          export BUILT_PRODUCTS_DIR="$(dirname "$APP_PATH")"
-          export FRAMEWORKS_FOLDER_PATH="Runner.app/Frameworks"
-          if [ -f "ios/Flutter/flutter_export_environment.sh" ]; then
-            source ios/Flutter/flutter_export_environment.sh
-            # Execute Flutter's internal framework embedding tool
-            "$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh" embed_frameworks
-          fi
-          
-          # 4. Create Payload and Copy
+          # 3. Create Payload and Copy
           rm -rf Payload app.ipa
           mkdir -p Payload
           
           # -RL ensures we follow symlinks and copy actual binary data
           cp -RL "$APP_PATH" Payload/
           
-          # 5. Zip it into the final IPA
+          # 4. Zip it into the final IPA
           zip -qr app.ipa Payload
