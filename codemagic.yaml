@@ -7,15 +7,50 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Get Flutter packages
-        script: flutter pub get
+      - name: Clean Workspace & Get Packages
+        script: |
+          flutter clean
+          rm -rf ios/Pods
+          rm -f ios/Podfile.lock
+          flutter pub get
           
-      - name: Build Unsigned iOS App and Package IPA
+      - name: Configure Podfile & Inject Linker Flags
+        script: |
+          # 1. Force iOS 15 Deployment Target
+          sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
+          
+          # 2. Append a robust post_install script to the Podfile to inject linker flags dynamically
+          cat << 'EOF' >> ios/Podfile
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      # Force load all static binary symbols to prevent stripping
+      config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
+      config.build_settings['OTHER_LDFLAGS'] << '-all_load'
+      # Turn off dead code stripping for maximum compliance
+      config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+      config.build_settings['STRIP_STYLE'] = 'non-global'
+    end
+  end
+end
+EOF
+
+          # 3. Fallback: Also append to the Flutter environment configuration files
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Debug.xcconfig
+          
+          # Run pod install so the new settings apply to the workspace configuration
+          cd ios && pod install
+          
+      - name: Build Unsigned iOS App & Package
         script: |
           # Build standard release
           flutter build ios --release --no-codesign
           
-          # Package using -RL to grab the actual bundle, not a symlink shortcut
+          # Package the actual bundle, resolving symlinks securely
           mkdir -p build/ios/Payload
           cp -RL build/ios/iphoneos/Runner.app build/ios/Payload/
           cd build/ios
