@@ -58,9 +58,10 @@ workflows:
         script: |
           set -e
           
-          # 1. Configure Flutter for Release Mode (DEVICE)
+          # 1. Configure Flutter for Release Mode
+          # CRITICAL FIX: Pass --no-codesign to prevent Flutter's strict certificate block
           echo "🚀 Generating release configuration..."
-          flutter build ios --config-only --release
+          flutter build ios --release --no-codesign
           
           # 2. Force Native Compilation for PHYSICAL DEVICE (arm64)
           cd ios
@@ -74,7 +75,7 @@ workflows:
                      CODE_SIGNING_ALLOWED=YES \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="-" \
-                     clean build
+                     build
           
           cd ..
           
