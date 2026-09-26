@@ -14,14 +14,14 @@ workflows:
           rm -rf ios/Pods ios/Podfile.lock
           flutter pub get
           
-      - name: Inject Linker Flags & Disable Signing (Bypass Pre-Flight)
+      - name: Inject BDK Linker Flags
         script: |
           set -e
           # 1. Force iOS 15.0 Deployment Target
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # 2. Inject Linker Flags and DISABLE signing so Xcode doesn't crash on pre-flight
+          # 2. Inject Linker Flags (Do not touch signing here)
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -34,11 +34,6 @@ workflows:
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
-                  
-                  # CRITICAL: We MUST set these to NO to bypass the certificate crash
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGN_IDENTITY'] = ''
                 end"""
                 
           if target_hook in content:
@@ -54,14 +49,28 @@ workflows:
           cd ios
           pod install --repo-update
           
-      - name: Build & Force Framework Assembly
+      - name: Raw Native Build & Framework Assembly
         script: |
           set -e
           
-          # 1. Compile the physical device binaries. 
-          # This will succeed but drop the frameworks (the 448B bug).
-          echo "🚀 Compiling raw unsigned binaries..."
-          flutter build ios --release --no-codesign
+          # 1. Generate Dart AOT and plugins ONLY. This stops Flutter from crashing on pre-flight checks.
+          echo "🚀 Generating Flutter AOT..."
+          flutter build ios --config-only --release
+          
+          # 2. Compile natively bypassing Flutter's strict wrapper
+          echo "🛠 Compiling arm64 device binary natively..."
+          cd ios
+          xcodebuild -workspace Runner.xcworkspace \
+                     -scheme Runner \
+                     -configuration Release \
+                     -sdk iphoneos \
+                     SYMROOT="$(pwd)/../build/ios" \
+                     COMPILER_INDEX_STORE_ENABLE=NO \
+                     CODE_SIGNING_ALLOWED=NO \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGN_IDENTITY="" \
+                     clean build
+          cd ..
           
           APP_PATH="build/ios/Release-iphoneos/Runner.app"
           if [ ! -d "$APP_PATH" ]; then
@@ -71,28 +80,30 @@ workflows:
           
           echo "✅ Found app shell at: $APP_PATH"
           
-          # 2. Setup Sideloadly Payload structure
+          # 3. Setup Sideloadly Payload structure
           rm -rf Payload app.ipa
           mkdir -p Payload/Runner.app
           
-          # 3. Copy the base app shell (Executable, Assets, Plists)
+          # 4. Copy the base app shell
           cp -a "$APP_PATH/"* Payload/Runner.app/
           
-          # 4. THE FIX: Manually embed the frameworks Xcode refused to embed!
-          echo "🛠 Manually gathering and embedding dropped frameworks..."
+          # 5. Manually gather the dropped Web3 and Pod frameworks
+          echo "🛠 Gathering and embedding native frameworks..."
           mkdir -p Payload/Runner.app/Frameworks
           
-          # Find and copy all compiled Pod frameworks (App.framework, bdk_flutter.framework, etc.)
-          find build/ios/Release-iphoneos -name "*.framework" -type d -prune -exec cp -a {} Payload/Runner.app/Frameworks/ \;
+          # Find all frameworks in the release folder, ignore the Runner.app itself, and copy them in
+          find build/ios/Release-iphoneos -name "*.framework" -type d | grep -v "Runner.app" | xargs -I {} cp -a {} Payload/Runner.app/Frameworks/
           
-          # Ensure Flutter.framework is also physically copied
-          cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/ || true
+          # Force copy Flutter's core framework just in case Xcode abandoned it entirely
+          if [ -d "ios/Flutter/Flutter.framework" ]; then
+            cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/
+          fi
           
-          # 5. Apply Ad-Hoc signature deep into our manually assembled bundle
-          echo "🔨 Applying deep Ad-Hoc signature to authenticated frameworks..."
+          # 6. Apply Ad-Hoc signature deep into our manually assembled bundle
+          echo "🔨 Applying deep Ad-Hoc signature..."
           codesign --force --deep --sign - Payload/Runner.app
           
-          # 6. Zip into the final IPA
+          # 7. Zip into the final IPA
           zip -r -q app.ipa Payload
           
           echo "📦 Final Assembled Sideload IPA Size:"
