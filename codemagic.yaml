@@ -37,6 +37,7 @@ workflows:
                   config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                   config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                  config.build_settings['DEVELOPMENT_TEAM'] = '0000000000'
                 end"""
                 
           if target_hook in content:
@@ -52,51 +53,52 @@ workflows:
           cd ios
           pod install --repo-update
           
-      - name: Build Unsigned IPA
+      - name: Build Unsigned Device IPA
         script: |
           set -e
           
-          # 1. Prepare Flutter asset bundles and configurations cleanly
-          flutter build ios --config-only --release
+          # 1. Configure Flutter for Release Mode (DEVICE)
+          # We ADD --no-codesign here to stop the "No certificates found" error
+          echo "🚀 Generating release configuration..."
+          flutter build ios --config-only --release --no-codesign
           
-          # 2. Direct compilation with Xcode using the simulator SDK.
-          # This compiles the source into real machine code but ignores signing identities entirely.
+          # 2. Force Native Compilation for PHYSICAL DEVICE (arm64)
+          # We use a dummy Team ID to trick Xcode into compiling
           cd ios
+          echo "🛠 Compiling with xcodebuild..."
           xcodebuild -workspace Runner.xcworkspace \
                      -scheme Runner \
                      -configuration Release \
-                     -sdk iphonesimulator \
+                     -sdk iphoneos \
                      SYMROOT="$(pwd)/../build/ios" \
                      COMPILER_INDEX_STORE_ENABLE=NO \
+                     DEVELOPMENT_TEAM="0000000000" \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" \
+                     PROVISIONING_PROFILE_SPECIFIER="" \
                      clean build
           
           cd ..
           
-          # 3. Define output path structure
-          PROJECT_ROOT=$(pwd)
-          APP_PATH="$PROJECT_ROOT/build/ios/Release-iphonesimulator/Runner.app"
+          # 3. Verify the DEVICE App Bundle exists
+          APP_PATH="build/ios/Release-iphoneos/Runner.app"
           
-          # 4. Verify compiler output stability
           if [ ! -d "$APP_PATH" ]; then
-            echo "❌ Build failed. Compiled Runner.app was not found at $APP_PATH"
+            echo "❌ Build failed. Runner.app not found at $APP_PATH"
             ls -R build/ios
             exit 1
           fi
           
-          echo "✅ Simulator release bundle compiled successfully!"
+          echo "✅ Device bundle compiled! Size:"
+          du -sh "$APP_PATH"
           
-          # 5. Pack structured Payload for Sideloadly
+          # 4. Package for Sideloadly
           rm -rf Payload app.ipa
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           
-          # 6. Inject the deployment criteria so sideload software treats it as a standard package
-          plutil -replace UIRequiredDeviceCapabilities -array arm64 "Payload/Runner.app/Info.plist"
-          
-          # Zip into the final artifact container
+          # Zip into an IPA file
           zip -r -q app.ipa Payload
           
           echo "📦 Final Unsigned Sideload IPA Size:"
