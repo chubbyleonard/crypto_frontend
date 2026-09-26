@@ -53,13 +53,12 @@ workflows:
           # Build standard release
           flutter build ios --release --no-codesign
           
-          # 1. Create Payload folder
           mkdir -p Payload
           
-          # 2. Use cp -RL to FORCE the server to follow the symlink and copy the REAL 50MB app bundle
-          cp -RL build/ios/iphoneos/Runner.app Payload/
+          # BYPASS THE SYMLINK. Copy the real 50MB app bundle directly from Xcode's true output folder.
+          cp -R build/ios/Release-iphoneos/Runner.app Payload/
           
-          # 3. Zip it (WITHOUT the -y flag, so it packages the actual files we just copied)
+          # Zip the final IPA
           zip -qr app.ipa Payload
           
     artifacts:
