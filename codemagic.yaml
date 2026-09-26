@@ -1,6 +1,6 @@
 workflows:
-  ios-sideload-workflow:
-    name: iOS Sideloadly Build
+  ios-release-workflow:
+    name: iOS Sideloadly Release
     max_build_duration: 60
     instance_type: mac_mini_m1
     environment:
@@ -10,22 +10,28 @@ workflows:
       - name: Get Flutter packages
         script: flutter pub get
         
-      - name: Force iOS 15 Deployment Target
+      - name: Force Static Linkage & Fix Podfile
         script: |
           rm -f ios/Podfile.lock
+          
+          # Force iOS 15 Deployment Target
           sed -i '' "s/^# platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           sed -i '' "s/^platform :ios.*/platform :ios, '15.0'/" ios/Podfile
           
-      - name: Build Unsigned iOS App (Profile Mode)
-        script: |
-          # 1. Use --profile to permanently bypass Xcode's dead-code stripping of the Rust bridge
-          flutter build ios --profile --no-codesign
+          # FORCE STATIC LINKAGE: This embeds the Rust FFI directly into the main app binary
+          # bypassing the need for Xcode to embed dynamic frameworks without codesigning.
+          sed -i '' "s/use_frameworks!.*/use_frameworks! :linkage => :static/" ios/Podfile
           
-          # 2. Package the IPA (Using -RL to copy the REAL 50MB folder, not a 166-byte shortcut)
+          # Prevent Dead Code Stripping
+          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
+          
+      - name: Build unsigned iOS app and package to IPA
+        script: |
+          # Use standard release mode now that static linkage is enforced
+          flutter build ios --release --no-codesign
+          
           mkdir -p build/ios/Payload
           cp -RL build/ios/iphoneos/Runner.app build/ios/Payload/
-          
-          # 3. Zip it into the final Sideloadly format
           cd build/ios
           zip -qr app.ipa Payload
           
