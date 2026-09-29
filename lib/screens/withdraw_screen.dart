@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:web3dart/web3dart.dart';
-import 'package:bdk_flutter/bdk_flutter.dart';
-import 'transaction_service.dart'; 
+import 'package:web3dart/web3dart.dart' as web3;
+import 'package:bdk_flutter/bdk_flutter.dart' as bdk;
+import '../services/transaction_service.dart'; 
 
 class WithdrawScreen extends StatefulWidget {
   // Required injected state from the bottom navigation bar
   final String ethPrivateKeyHex;
-  final Web3Client ethClient;
-  final Wallet bdkWallet;
+  final web3.Web3Client ethClient;
+  final bdk.Wallet bdkWallet;
 
   const WithdrawScreen({
     super.key,
@@ -197,7 +197,8 @@ class _WithdrawScreenState extends State<WithdrawScreen> {
   Widget _buildNetworkButton(String chain, String label) {
     final isSelected = _selectedChain == chain;
     return GestureDetector(
-      onPressed: () => setState(() => _selectedChain = chain),
+      // FIXED: GestureDetector uses onTap, not onPressed
+      onTap: () => setState(() => _selectedChain = chain),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
         decoration: BoxDecoration(

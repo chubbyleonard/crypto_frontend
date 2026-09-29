@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:web3dart/web3dart.dart';
-import 'package:bdk_flutter/bdk_flutter.dart';
+import 'package:web3dart/web3dart.dart' as web3;
+import 'package:bdk_flutter/bdk_flutter.dart' as bdk;
+import 'package:web3dart/crypto.dart' as crypto;
 
 class TransactionService {
-  // Your authenticated, permanent ngrok tunnel domain
   final String nodeBackendUrl = 'https://penalty-snowdrift-managing.ngrok-free.dev'; 
 
   /// --- EVM (Ethereum) WITHDRAWAL ---
@@ -12,64 +12,67 @@ class TransactionService {
     required String privateKeyHex,
     required String toAddress,
     required double amountInEth,
-    required Web3Client ethClient,
+    required web3.Web3Client ethClient,
   }) async {
-    // 1. Load the Vault keys in memory
-    final credentials = EthPrivateKey.fromHex(privateKeyHex);
-    final receiver = EthereumAddress.fromHex(toAddress);
+    final credentials = web3.EthPrivateKey.fromHex(privateKeyHex);
+    final receiver = web3.EthereumAddress.fromHex(toAddress);
 
-    // 2. Build the transaction
     final amountInWei = BigInt.from(amountInEth * 1e18);
-    final transaction = Transaction(
+    final transaction = web3.Transaction(
       to: receiver,
-      value: EtherAmount.inWei(amountInWei),
+      value: web3.EtherAmount.inWei(amountInWei),
       maxGas: 21000, 
     );
 
-    // 3. Sign mathematically on the iPhone
     final signedBytes = await ethClient.signTransaction(
       credentials,
       transaction,
       chainId: 1, 
     );
-    final signedHex = '0x${bytesToHex(signedBytes)}';
+    final signedHex = '0x${crypto.bytesToHex(signedBytes)}';
 
-    // 4. Send the locked hex to the Node.js Courier
     return await _broadcastToNode(signedHex, 'evm');
   }
 
   /// --- NATIVE BITCOIN WITHDRAWAL ---
   Future<String> withdrawBtc({
-    required Wallet bdkWallet,
+    required bdk.Wallet bdkWallet,
     required String toAddress,
     required int amountInSats,
   }) async {
-    // 1. Sync the wallet to fetch available UTXOs
-    await bdkWallet.sync(
-      blockchain: Blockchain.create(
-        network: Network.Bitcoin,
-        config: BlockchainConfig.electrum(
-          config: ElectrumConfig(
-            url: 'ssl://electrum.blockstream.info:50002',
-            retry: 5,
-          ),
-        ),
-      ),
+    final electrumConfig = bdk.ElectrumConfig(
+      url: 'ssl://electrum.blockstream.info:50002', 
+      retry: 5,
+      stopGap: 20,
+      timeout: 5,
+      validateDomain: true,
     );
+    
+    // DEMANDS the 'config:' label
+    final blockchainConfig = bdk.BlockchainConfig.electrum(config: electrumConfig);
+    
+    // ERROR 1 FIXED: create() DEMANDS the 'config:' label (0 positional allowed)
+    final blockchain = await bdk.Blockchain.create(config: blockchainConfig);
+    
+    // ERROR 2 FIXED: sync() FORBIDS labels (1 positional required)
+    await bdkWallet.sync(blockchain);
 
-    // 2. Build the transaction structure
-    final txBuilder = TxBuilder();
-    final scriptPubKey = await Address.create(address: toAddress).scriptPubKey();
+    final txBuilder = bdk.TxBuilder();
+    
+    final addressInfo = await bdk.Address.create(address: toAddress);
+    final scriptPubKey = await addressInfo.scriptPubKey(); 
+    
     final builtTx = await txBuilder
         .addRecipient(scriptPubKey, amountInSats)
-        .feeRate(1.5) // sat/vbyte
+        .feeRate(1.5) 
         .finish(bdkWallet);
 
-    // 3. Sign mathematically on the iPhone using the un-stripped Rust bridge
     final signedTx = await bdkWallet.sign(psbt: builtTx.psbt);
-    final signedHex = await signedTx.extractTx();
+    
+    final tx = await signedTx.extractTx();
+    final txBytes = await tx.serialize();
+    final signedHex = crypto.bytesToHex(txBytes);
 
-    // 4. Send the locked hex to the Node.js Courier
     return await _broadcastToNode(signedHex, 'btc');
   }
 
@@ -81,7 +84,6 @@ class TransactionService {
       url,
       headers: {
         'Content-Type': 'application/json',
-        // Commands ngrok to bypass the interactive HTML warning screen 
         'ngrok-skip-browser-warning': 'true', 
       },
       body: jsonEncode({'signedTx': signedHex}),

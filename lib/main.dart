@@ -6,9 +6,9 @@ import 'dart:async';
 
 // --- NEW IMPORTS FOR NON-CUSTODIAL PIPELINE ---
 import 'package:http/http.dart' as http;
-import 'package:web3dart/web3dart.dart';
-import 'package:bdk_flutter/bdk_flutter.dart';
-import 'withdraw_screen.dart'; // The Web3 UI we built
+import 'package:web3dart/web3dart.dart' as web3;
+import 'package:bdk_flutter/bdk_flutter.dart' as bdk;
+import 'screens/withdraw_screen.dart'; // The Web3 UI we built
 
 import 'services/api_service.dart';
 import 'services/web3_service.dart';
@@ -63,11 +63,11 @@ class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
   
   // Web3 & RPC State
-  late final Web3Client _ethClient;
+  late final web3.Web3Client _ethClient;
   late final http.Client _httpClient;
   
   final _storage = const FlutterSecureStorage();
-  Wallet? _bdkWallet;
+  bdk.Wallet? _bdkWallet;
   String? _ethPrivateKeyHex;
   bool _isLoadingKeys = false;
 
@@ -77,7 +77,7 @@ class _MainNavigationState extends State<MainNavigation> {
     
     // 1. Initialize the HTTP client and Alchemy connection
     _httpClient = http.Client();
-    _ethClient = Web3Client(
+    _ethClient = web3.Web3Client(
       'https://eth-mainnet.g.alchemy.com/v2/alch_9CfSUPJIa_kZnTnWw8M5U',
       _httpClient,
     );
@@ -96,20 +96,20 @@ class _MainNavigationState extends State<MainNavigation> {
         _ethPrivateKeyHex = Web3Service.getPrivateKeyFromSeed(seed);
         
         // Construct BDK Wallet instance for native BTC transactions
-        final mnemonic = await Mnemonic.fromString(seed);
-        final descriptorSecretKey = await DescriptorSecretKey.create(
-          network: Network.Bitcoin,
+        final mnemonic = await bdk.Mnemonic.fromString(seed);
+        final descriptorSecretKey = await bdk.DescriptorSecretKey.create(
+          network: bdk.Network.Bitcoin,
           mnemonic: mnemonic,
         );
-        final descriptor = await Descriptor.newBip84(
+        final descriptor = await bdk.Descriptor.newBip84(
           secretKey: descriptorSecretKey,
-          network: Network.Bitcoin,
-          keychain: KeychainKind.External,
+          network: bdk.Network.Bitcoin,
+          keychain: bdk.KeychainKind.External,
         );
-        _bdkWallet = await Wallet.create(
+        _bdkWallet = await bdk.Wallet.create(
           descriptor: descriptor,
-          network: Network.Bitcoin,
-          databaseConfig: const DatabaseConfig.memory(),
+          network: bdk.Network.Bitcoin,
+          databaseConfig: const bdk.DatabaseConfig.memory(),
         );
       }
     } catch (e) {
