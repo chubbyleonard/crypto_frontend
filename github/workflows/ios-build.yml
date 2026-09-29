@@ -34,30 +34,16 @@ jobs:
           c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
           c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
           
-          # 1a. KILL ALL XCODE STRIPPING MECHANISMS
-          c = re.sub(r'DEAD_CODE_STRIPPING = YES;', 'DEAD_CODE_STRIPPING = NO;', c)
-          c = re.sub(r'STRIP_INSTALLED_PRODUCT = YES;', 'STRIP_INSTALLED_PRODUCT = NO;', c)
-          c = re.sub(r'COPY_PHASE_STRIP = YES;', 'COPY_PHASE_STRIP = NO;', c)
-          c = re.sub(r'STRIP_STYLE = [^;]*;', 'STRIP_STYLE = "non-global";', c)
-          
           with open(path, 'w') as f:
               f.write(c)
           EOF
           python3 patch_xcode.py
           
-          # 1b. Guarantee overrides in Flutter's Release config
-          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
-          echo "STRIP_INSTALLED_PRODUCT = NO" >> ios/Flutter/Release.xcconfig
-          echo "COPY_PHASE_STRIP = NO" >> ios/Flutter/Release.xcconfig
-          echo "DEPLOYMENT_POSTPROCESSING = NO" >> ios/Flutter/Release.xcconfig
-          echo "STRIP_STYLE = non-global" >> ios/Flutter/Release.xcconfig
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
-          
           # 2. Force iOS 15.0 Deployment Target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # 3. Inject BDK Linker Flags and disable signing on CocoaPods
+          # 3. Disable signing on CocoaPods
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -67,13 +53,6 @@ jobs:
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
-                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
-                  config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
-                  config.build_settings['COPY_PHASE_STRIP'] = 'NO'
-                  config.build_settings['STRIP_STYLE'] = 'non-global'
-                  
-                  # Disable signing on CocoaPods
                   config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                   config.build_settings['CODE_SIGN_IDENTITY'] = ''
@@ -91,8 +70,9 @@ jobs:
           cd ios
           pod install --repo-update
 
+      # FIX: Build in Profile mode to force Xcode to preserve all Rust FFI symbols
       - name: Build Unsigned App Natively
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --profile --no-codesign
 
       - name: Manually Assemble Frameworks & Package IPA
         run: |
@@ -100,7 +80,7 @@ jobs:
           
           APP_DIR="build/ios/iphoneos"
           if [ ! -d "$APP_DIR/Runner.app" ]; then
-            APP_DIR="build/ios/Release-iphoneos"
+            APP_DIR="build/ios/Profile-iphoneos"
           fi
           
           echo "Found compiled data in: $APP_DIR"
@@ -115,8 +95,8 @@ jobs:
           # Ensure Frameworks directory exists
           mkdir -p Payload/Runner.app/Frameworks
           
-          # Copy compiled frameworks
-          find build/ios -path "*/Release-iphoneos/*.framework" -type d | grep -v "Runner.app" | while read fw; do
+          # Copy Profile-compiled frameworks
+          find build/ios -type d -name "*.framework" | grep -E "Profile-iphoneos|iphoneos" | grep -v "Runner.app" | while read fw; do
             cp -a "$fw" Payload/Runner.app/Frameworks/ || true
           done
           
@@ -131,13 +111,10 @@ jobs:
             target_bin="$fw/$bin_name"
             
             if [ ! -f "$target_bin" ]; then
-              echo "Removing non-binary framework: $fw"
               rm -rf "$fw"
             elif file "$target_bin" | grep -q "current ar archive"; then
-              echo "Removing static archive framework: $fw"
               rm -rf "$fw"
             elif ! file "$target_bin" | grep -q "dynamically linked"; then
-              echo "Removing non-dynamic framework: $fw"
               rm -rf "$fw"
             fi
           done
