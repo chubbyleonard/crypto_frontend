@@ -34,18 +34,24 @@ jobs:
           c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
           c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
           
-          # FIX: Stop Xcode from aggressively deleting Rust FFI symbols in the main Runner
-          c = c.replace('DEAD_CODE_STRIPPING = YES;', 'DEAD_CODE_STRIPPING = NO;')
-          c = c.replace('STRIP_STYLE = all;', 'STRIP_STYLE = "non-global";')
+          # 1a. KILL ALL XCODE STRIPPING MECHANISMS
+          c = re.sub(r'DEAD_CODE_STRIPPING = YES;', 'DEAD_CODE_STRIPPING = NO;', c)
+          c = re.sub(r'STRIP_INSTALLED_PRODUCT = YES;', 'STRIP_INSTALLED_PRODUCT = NO;', c)
+          c = re.sub(r'COPY_PHASE_STRIP = YES;', 'COPY_PHASE_STRIP = NO;', c)
+          c = re.sub(r'STRIP_STYLE = [^;]*;', 'STRIP_STYLE = "non-global";', c)
           
           with open(path, 'w') as f:
               f.write(c)
           EOF
           python3 patch_xcode.py
           
-          # 1.5. Guarantee overrides in Flutter's Release config
+          # 1b. Guarantee overrides in Flutter's Release config
           echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
+          echo "STRIP_INSTALLED_PRODUCT = NO" >> ios/Flutter/Release.xcconfig
+          echo "COPY_PHASE_STRIP = NO" >> ios/Flutter/Release.xcconfig
+          echo "DEPLOYMENT_POSTPROCESSING = NO" >> ios/Flutter/Release.xcconfig
           echo "STRIP_STYLE = non-global" >> ios/Flutter/Release.xcconfig
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load" >> ios/Flutter/Release.xcconfig
           
           # 2. Force iOS 15.0 Deployment Target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
@@ -63,6 +69,8 @@ jobs:
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
                   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+                  config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
+                  config.build_settings['COPY_PHASE_STRIP'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
                   
                   # Disable signing on CocoaPods
@@ -116,7 +124,7 @@ jobs:
             cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/ || true
           fi
           
-          # Remove static frameworks (like GoogleUtilities) that crash Sideloadly's Mach-O signer
+          # Remove static frameworks that crash Sideloadly's Mach-O signer
           for fw in Payload/Runner.app/Frameworks/*.framework; do
             [ -d "$fw" ] || continue
             bin_name=$(basename "$fw" .framework)
