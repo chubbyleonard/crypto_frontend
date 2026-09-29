@@ -34,10 +34,18 @@ jobs:
           c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
           c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
           
+          # FIX: Stop Xcode from aggressively deleting Rust FFI symbols in the main Runner
+          c = c.replace('DEAD_CODE_STRIPPING = YES;', 'DEAD_CODE_STRIPPING = NO;')
+          c = c.replace('STRIP_STYLE = all;', 'STRIP_STYLE = "non-global";')
+          
           with open(path, 'w') as f:
               f.write(c)
           EOF
           python3 patch_xcode.py
+          
+          # 1.5. Guarantee overrides in Flutter's Release config
+          echo "DEAD_CODE_STRIPPING = NO" >> ios/Flutter/Release.xcconfig
+          echo "STRIP_STYLE = non-global" >> ios/Flutter/Release.xcconfig
           
           # 2. Force iOS 15.0 Deployment Target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
