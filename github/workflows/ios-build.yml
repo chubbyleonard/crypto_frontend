@@ -19,75 +19,76 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: 🔒 Lock BDK Symbols & Force Static Linkage
+      - name: Force Static Pods Linkage
         run: |
-          set -e
-          
-          # 1. Force iOS 15.0 Deployment Target
-          sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
-          sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
-          
-          # 2. Inject Static Linkage & Build Settings into Podfile
-          cat << 'EOF' > fix_podfile.py
+          # Switch to static linkage so Rust code lives directly in the Runner executable
+          python3 -c "
           import re
-          path = 'ios/Podfile'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          # Force CocoaPods to compile bdk_flutter natively into the Runner
-          if "use_frameworks!" in content:
-              content = re.sub(r'use_frameworks!.*', "use_frameworks! :linkage => :static", content)
-          else:
-              content = "use_frameworks! :linkage => :static\n" + content
-              
-          target_hook = 'flutter_additional_ios_build_settings(target)'
-          injection = """flutter_additional_ios_build_settings(target)
-                target.build_configurations.each do |config|
-                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO' 
-                  config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
-                  config.build_settings['STRIP_STYLE'] = 'non-global'
-                  config.build_settings['DEPLOYMENT_POSTPROCESSING'] = 'NO'
-                  config.build_settings['GCC_SYMBOLS_PRIVATE_EXTERN'] = 'NO'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                end"""
-                
-          if target_hook in content:
-              content = content.replace(target_hook, injection)
-              
-          with open(path, 'w') as f:
-              f.write(content)
-          EOF
-          python3 fix_podfile.py
-          
-          # 3. Force the specific BDK math symbol to survive in Release.xcconfig
-          CONFIG_PATH="ios/Flutter/Release.xcconfig"
-          echo "" >> $CONFIG_PATH
-          echo "// INJECTED BY GITHUB ACTIONS" >> $CONFIG_PATH
-          echo "DEAD_CODE_STRIPPING = NO" >> $CONFIG_PATH
-          echo "STRIP_INSTALLED_PRODUCT = NO" >> $CONFIG_PATH
-          echo "STRIP_STYLE = non-global" >> $CONFIG_PATH
-          echo "DEPLOYMENT_POSTPROCESSING = NO" >> $CONFIG_PATH
-          echo "GCC_SYMBOLS_PRIVATE_EXTERN = NO" >> $CONFIG_PATH
-          # CRITICAL: We MUST explicitly call out _new_uint_8_list_0 with the -u flag
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic -Wl,-u,_new_uint_8_list_0" >> $CONFIG_PATH
+          with open('ios/Podfile', 'r') as f: c = f.read()
+          c = re.sub(r'use_frameworks!.*', '', c)
+          with open('ios/Podfile', 'w') as f: f.write(\"use_frameworks! :linkage => :static\\n\" + c)
+          "
+          # Ensure global deployment target matches
+          sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install --repo-update
 
+      - name: ☢️ NUKE APPLE OPTIMIZATION (Native Xcode API)
+        run: |
+          # We use the native Ruby xcodeproj gem to directly hardwire the settings. 
+          # This is immune to regex failures and Xcode overwrites.
+          cat << 'EOF' > fix_xcode.rb
+          require 'xcodeproj'
+          
+          def lock_settings(target)
+            target.build_configurations.each do |config|
+              # 1. Disable all stripping AND Link-Time Optimization (The true culprit)
+              config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+              config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
+              config.build_settings['GCC_SYMBOLS_PRIVATE_EXTERN'] = 'NO'
+              config.build_settings['LLVM_LTO'] = 'NO'
+              config.build_settings['STRIP_STYLE'] = 'non-global'
+              config.build_settings['DEPLOYMENT_POSTPROCESSING'] = 'NO'
+              
+              # 2. Neutralize code signing requirements to prevent build failures
+              config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+              config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+              config.build_settings['CODE_SIGN_IDENTITY'] = ''
+              config.build_settings['DEVELOPMENT_TEAM'] = ''
+              config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+              
+              # 3. Inject Linker Flags to force public exposure of symbols
+              ldflags = config.build_settings['OTHER_LDFLAGS'] || ['$(inherited)']
+              ldflags = [ldflags] if ldflags.is_a?(String)
+              ldflags << '-all_load' unless ldflags.include?('-all_load')
+              ldflags << '-export_dynamic' unless ldflags.include?('-export_dynamic')
+              ldflags << '-Wl,-u,_new_uint_8_list_0' unless ldflags.include?('-Wl,-u,_new_uint_8_list_0')
+              ldflags << '-Wl,-u,_store_dart_post_cobject' unless ldflags.include?('-Wl,-u,_store_dart_post_cobject')
+              config.build_settings['OTHER_LDFLAGS'] = ldflags
+            end
+          end
+          
+          puts "Locking Runner.xcodeproj..."
+          runner_proj = Xcodeproj::Project.open('ios/Runner.xcodeproj')
+          runner_proj.targets.each { |t| lock_settings(t) }
+          runner_proj.save
+          
+          puts "Locking Pods.xcodeproj..."
+          pods_proj = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
+          pods_proj.targets.each { |t| lock_settings(t) }
+          pods_proj.save
+          
+          puts "✅ Xcode optimization bypassed successfully."
+          EOF
+          ruby fix_xcode.rb
+
       - name: Build Unsigned Release App
         run: |
-          # No OTHER_LDFLAGS in the CLI args so we don't overwrite the Podfile/xcconfig inheritance
-          flutter build ios --release --no-codesign -- \
-            DEAD_CODE_STRIPPING=NO \
-            STRIP_INSTALLED_PRODUCT=NO \
-            STRIP_STYLE=non-global \
-            DEPLOYMENT_POSTPROCESSING=NO \
-            GCC_SYMBOLS_PRIVATE_EXTERN=NO
+          # The flags are natively locked into both project files now.
+          flutter build ios --release --no-codesign
 
       - name: Package IPA Correctly
         run: |
@@ -99,13 +100,14 @@ jobs:
           mkdir -p Payload/Runner.app
           cp -a "$APP_DIR/"* Payload/Runner.app/
           
-          # Clean static frameworks to avoid Sideloadly Mach-O errors
+          # Strip static artifacts out so Sideloadly's Mach-O parser doesn't choke
+          find Payload/Runner.app -name "*.a" -type f -delete || true
           find Payload/Runner.app/Frameworks -name "*.framework" -type d | while read fw; do
             bin_name=$(basename "$fw" .framework)
-            if file "$fw/$bin_name" | grep -q "current ar archive"; then
+            if [ -f "$fw/$bin_name" ] && file "$fw/$bin_name" | grep -q "current ar archive"; then
                rm -rf "$fw"
             fi
-          done
+          done || true
           
           codesign --force --deep --sign - Payload/Runner.app
           zip -r -q app.ipa Payload
