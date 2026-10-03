@@ -19,28 +19,90 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Configure Linker & Force Static Embedding
+      - name: 🩹 Inject Dummy Method to Prevent Stripping
         run: |
           set -e
           
-          # 1. Force iOS 15.0 Deployment Target
+          # 1. SEARCH for the generated header file containing the dummy method
+          # Usually named 'bridge_generated.h' or 'frb.h'
+          HEADER_FILE=$(find ios/Runner -name "*.h" -print0 | xargs -0 grep -l "dummy_method_to_enforce_bundling" || true)
+          
+          if [ -z "$HEADER_FILE" ]; then
+            echo "⚠️ Warning: Could not find a header with 'dummy_method_to_enforce_bundling'."
+            echo "Attempting to proceed with linker flags only..."
+          else
+            echo "✅ Found dummy method in: $HEADER_FILE"
+            FILENAME=$(basename "$HEADER_FILE")
+            
+            # 2. Ensure Bridging Header imports it
+            BRIDGING_HEADER="ios/Runner/Runner-Bridging-Header.h"
+            if [ ! -f "$BRIDGING_HEADER" ]; then
+              echo "// Created by GitHub Actions" > "$BRIDGING_HEADER"
+            fi
+            
+            if ! grep -q "$FILENAME" "$BRIDGING_HEADER"; then
+              echo "Injecting import into Bridging Header..."
+              echo "#import \"$FILENAME\"" >> "$BRIDGING_HEADER"
+            fi
+            
+            # 3. Inject the CALL into AppDelegate.swift
+            APP_DELEGATE="ios/Runner/AppDelegate.swift"
+            if [ -f "$APP_DELEGATE" ]; then
+              if ! grep -q "dummy_method_to_enforce_bundling" "$APP_DELEGATE"; then
+                echo "💉 Injecting dummy call into AppDelegate.swift..."
+                # We use python to safely insert it inside the didFinishLaunchingWithOptions function
+                cat << 'EOF' > inject_dummy.py
+          import sys
+          
+          path = 'ios/Runner/AppDelegate.swift'
+          with open(path, 'r') as f:
+              content = f.read()
+              
+          if 'dummy_method_to_enforce_bundling' not in content:
+              # Look for the return statement or end of function to insert before it
+              marker = 'return super.application(application, didFinishLaunchingWithOptions: launchOptions)'
+              injection = '    let _ = dummy_method_to_enforce_bundling()\n    ' + marker
+              
+              if marker in content:
+                  content = content.replace(marker, injection)
+              else:
+                  # Fallback: try to insert at start of function
+                  marker = 'didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {'
+                  injection = marker + '\n    let _ = dummy_method_to_enforce_bundling()'
+                  content = content.replace(marker, injection)
+                  
+          with open(path, 'w') as f:
+              f.write(content)
+          EOF
+                python3 inject_dummy.py
+              else
+                echo "👌 AppDelegate already calls dummy method."
+              fi
+            fi
+          fi
+
+      - name: Configure Linker & Force Static Linkage
+        run: |
+          set -e
+          
+          # Force iOS 15.0 Deployment Target
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # 2. Inject Static Linkage & Build Settings into Podfile
+          # Configure Podfile for Static Linkage (Vital for FFI)
           cat << 'EOF' > fix_podfile.py
           import re
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
               
-          # Force CocoaPods to use static linkage (merges Rust lib into main binary)
+          # Force static linkage
           if "use_frameworks!" in content:
               content = re.sub(r'use_frameworks!.*', "use_frameworks! :linkage => :static", content)
           else:
               content = "use_frameworks! :linkage => :static\n" + content
               
-          # Inject strict anti-strip settings for all Pods
+          # Inject build settings
           target_hook = 'flutter_additional_ios_build_settings(target)'
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
@@ -48,12 +110,10 @@ jobs:
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO' 
                   config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
-                  config.build_settings['DEPLOYMENT_POSTPROCESSING'] = 'NO'
                   config.build_settings['GCC_SYMBOLS_PRIVATE_EXTERN'] = 'NO'
                   config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                   config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                  # We DO NOT override OTHER_LDFLAGS here to avoid breaking Pod linking
                 end"""
                 
           if target_hook in content:
@@ -64,18 +124,15 @@ jobs:
           EOF
           python3 fix_podfile.py
           
-          # 3. Inject Linker Flags into Release.xcconfig
-          # This is the SAFE place to add flags without breaking CocoaPods
+          # Inject Flags into Release.xcconfig
           CONFIG_PATH="ios/Flutter/Release.xcconfig"
           echo "" >> $CONFIG_PATH
-          echo "// INJECTED BY GITHUB ACTIONS" >> $CONFIG_PATH
           echo "DEAD_CODE_STRIPPING = NO" >> $CONFIG_PATH
           echo "STRIP_INSTALLED_PRODUCT = NO" >> $CONFIG_PATH
           echo "STRIP_STYLE = non-global" >> $CONFIG_PATH
-          echo "DEPLOYMENT_POSTPROCESSING = NO" >> $CONFIG_PATH
           echo "GCC_SYMBOLS_PRIVATE_EXTERN = NO" >> $CONFIG_PATH
-          # CRITICAL: This combines inherited Pod flags with our required symbols
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic -Wl,-u,_new_uint_8_list_0" >> $CONFIG_PATH
+          # We add -Wl,-export_dynamic to ensure symbols are visible to dlsym
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic" >> $CONFIG_PATH
 
       - name: Install CocoaPods
         run: |
@@ -84,47 +141,31 @@ jobs:
 
       - name: Build Unsigned Release App
         run: |
-          # We REMOVED 'OTHER_LDFLAGS' from the command line arguments below.
-          # This ensures xcodebuild uses the values we injected into Release.xcconfig,
-          # which correctly include the CocoaPods libraries.
           flutter build ios --release --no-codesign -- \
             DEAD_CODE_STRIPPING=NO \
             STRIP_INSTALLED_PRODUCT=NO \
-            STRIP_STYLE=non-global \
-            DEPLOYMENT_POSTPROCESSING=NO \
             GCC_SYMBOLS_PRIVATE_EXTERN=NO
 
       - name: Package IPA Correctly
         run: |
           set -e
-          
           APP_DIR="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_DIR" ]; then
-             APP_DIR="build/ios/Release-iphoneos/Runner.app"
-          fi
-          
-          echo "Packaging from: $APP_DIR"
+          if [ ! -d "$APP_DIR" ]; then APP_DIR="build/ios/Release-iphoneos/Runner.app"; fi
           
           rm -rf Payload app.ipa
           mkdir -p Payload/Runner.app
-          
-          # Copy target application bundle properties cleanly
           cp -a "$APP_DIR/"* Payload/Runner.app/
           
-          # Clean up static libraries
+          # Clean static frameworks
           find Payload/Runner.app/Frameworks -name "*.framework" -type d | while read fw; do
             bin_name=$(basename "$fw" .framework)
             if file "$fw/$bin_name" | grep -q "current ar archive"; then
-               echo "Removing static archive artifact wrapper: $fw"
                rm -rf "$fw"
             fi
           done
           
-          # Fake Sign
           codesign --force --deep --sign - Payload/Runner.app
-          
           zip -r -q app.ipa Payload
-          ls -lh app.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
