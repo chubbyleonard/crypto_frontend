@@ -19,112 +19,114 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Configure Podfile Deployment Target
+      - name: Configure Linker & Force Static Embedding
         run: |
           set -e
-          # Force iOS 15.0 Deployment Target across the entire workspace configuration
+          
+          # 1. Force iOS 15.0 Deployment Target
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
+          # 2. Inject Static Linkage & Build Settings into Podfile
           cat << 'EOF' > fix_podfile.py
+          import re
           path = 'ios/Podfile'
           with open(path, 'r') as f:
               content = f.read()
               
+          # Force CocoaPods to use static linkage (merges Rust lib into main binary)
+          if "use_frameworks!" in content:
+              content = re.sub(r'use_frameworks!.*', "use_frameworks! :linkage => :static", content)
+          else:
+              content = "use_frameworks! :linkage => :static\n" + content
+              
+          # Inject strict anti-strip settings for all Pods
           target_hook = 'flutter_additional_ios_build_settings(target)'
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
+                  config.build_settings['DEAD_CODE_STRIPPING'] = 'NO' 
                   config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
-                  config.build_settings['COPY_PHASE_STRIP'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
                   config.build_settings['DEPLOYMENT_POSTPROCESSING'] = 'NO'
-                  
-                  # Bypasses local workspace code signing rules
+                  config.build_settings['GCC_SYMBOLS_PRIVATE_EXTERN'] = 'NO'
                   config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                   config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                  # We DO NOT override OTHER_LDFLAGS here to avoid breaking Pod linking
                 end"""
                 
           if target_hook in content:
               content = content.replace(target_hook, injection)
-              with open(path, 'w') as f:
-                  f.write(content)
+              
+          with open(path, 'w') as f:
+              f.write(content)
           EOF
           python3 fix_podfile.py
+          
+          # 3. Inject Linker Flags into Release.xcconfig
+          # This is the SAFE place to add flags without breaking CocoaPods
+          CONFIG_PATH="ios/Flutter/Release.xcconfig"
+          echo "" >> $CONFIG_PATH
+          echo "// INJECTED BY GITHUB ACTIONS" >> $CONFIG_PATH
+          echo "DEAD_CODE_STRIPPING = NO" >> $CONFIG_PATH
+          echo "STRIP_INSTALLED_PRODUCT = NO" >> $CONFIG_PATH
+          echo "STRIP_STYLE = non-global" >> $CONFIG_PATH
+          echo "DEPLOYMENT_POSTPROCESSING = NO" >> $CONFIG_PATH
+          echo "GCC_SYMBOLS_PRIVATE_EXTERN = NO" >> $CONFIG_PATH
+          # CRITICAL: This combines inherited Pod flags with our required symbols
+          echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic -Wl,-u,_new_uint_8_list_0" >> $CONFIG_PATH
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install --repo-update
 
-      - name: Build Unsigned App with Flag Overrides
+      - name: Build Unsigned Release App
         run: |
-          # The '--' separator appends arguments directly to the underlying xcodebuild execution.
-          # This guarantees optimization blocks are bypassed, forcing symbols to remain unstripped.
+          # We REMOVED 'OTHER_LDFLAGS' from the command line arguments below.
+          # This ensures xcodebuild uses the values we injected into Release.xcconfig,
+          # which correctly include the CocoaPods libraries.
           flutter build ios --release --no-codesign -- \
             DEAD_CODE_STRIPPING=NO \
             STRIP_INSTALLED_PRODUCT=NO \
-            COPY_PHASE_STRIP=NO \
-            DEPLOYMENT_POSTPROCESSING=NO \
             STRIP_STYLE=non-global \
-            OTHER_LDFLAGS="\$(inherited) -all_load -Wl,-export_dynamic"
+            DEPLOYMENT_POSTPROCESSING=NO \
+            GCC_SYMBOLS_PRIVATE_EXTERN=NO
 
-      - name: Manually Assemble Frameworks & Package IPA
+      - name: Package IPA Correctly
         run: |
           set -e
           
-          APP_DIR="build/ios/iphoneos"
-          if [ ! -d "$APP_DIR/Runner.app" ]; then
-            APP_DIR="build/ios/Release-iphoneos"
+          APP_DIR="build/ios/iphoneos/Runner.app"
+          if [ ! -d "$APP_DIR" ]; then
+             APP_DIR="build/ios/Release-iphoneos/Runner.app"
           fi
           
-          echo "Found compiled data in: $APP_DIR"
+          echo "Packaging from: $APP_DIR"
           
-          # Reset Payload structure
           rm -rf Payload app.ipa
           mkdir -p Payload/Runner.app
           
-          # Copy the base app bundle
-          cp -a "$APP_DIR/Runner.app/"* Payload/Runner.app/
+          # Copy target application bundle properties cleanly
+          cp -a "$APP_DIR/"* Payload/Runner.app/
           
-          # Ensure Frameworks directory exists
-          mkdir -p Payload/Runner.app/Frameworks
-          
-          # Copy compiled dynamic frameworks
-          find build/ios -path "*/Release-iphoneos/*.framework" -type d | grep -v "Runner.app" | while read fw; do
-            cp -a "$fw" Payload/Runner.app/Frameworks/ || true
-          done
-          
-          if [ -d "ios/Flutter/Flutter.framework" ]; then
-            cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/ || true
-          fi
-          
-          # Remove non-dynamic architecture objects to preserve Mach-O structure validation
-          for fw in Payload/Runner.app/Frameworks/*.framework; do
-            [ -d "$fw" ] || continue
+          # Clean up static libraries
+          find Payload/Runner.app/Frameworks -name "*.framework" -type d | while read fw; do
             bin_name=$(basename "$fw" .framework)
-            target_bin="$fw/$bin_name"
-            
-            if [ ! -f "$target_bin" ]; then
-              rm -rf "$fw"
-            elif file "$target_bin" | grep -q "current ar archive"; then
-              rm -rf "$fw"
-            elif ! file "$target_bin" | grep -q "dynamically linked"; then
-              rm -rf "$fw"
+            if file "$fw/$bin_name" | grep -q "current ar archive"; then
+               echo "Removing static archive artifact wrapper: $fw"
+               rm -rf "$fw"
             fi
           done
           
-          # Force pseudo-ad-hoc code signature over frameworks so Sideloadly can process the package identity
-          find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - {} \; || true
+          # Fake Sign
           codesign --force --deep --sign - Payload/Runner.app
           
-          # Zip into final testing package container
           zip -r -q app.ipa Payload
           ls -lh app.ipa
 
-      - name: Upload IPA Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: Sideload-Release-IPA
