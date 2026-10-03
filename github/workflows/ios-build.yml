@@ -19,49 +19,13 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Lobotomize Apple Certificate Checks & Force FFI Symbols
+      - name: Configure Podfile Deployment Target
         run: |
           set -e
-          
-          # 1. Strip the Development Team ID from the root Xcode project
-          cat << 'EOF' > patch_xcode.py
-          import re
-          path = 'ios/Runner.xcodeproj/project.pbxproj'
-          with open(path, 'r') as f:
-              c = f.read()
-              
-          c = re.sub(r'DEVELOPMENT_TEAM = [^;]*;', '', c)
-          c = re.sub(r'DevelopmentTeam = [^;]*;', '', c)
-          c = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = [^;]*;', 'PROVISIONING_PROFILE_SPECIFIER = "";', c)
-          
-          # Kill stripping at the root project level
-          c = re.sub(r'DEAD_CODE_STRIPPING = YES;', 'DEAD_CODE_STRIPPING = NO;', c)
-          c = re.sub(r'STRIP_INSTALLED_PRODUCT = YES;', 'STRIP_INSTALLED_PRODUCT = NO;', c)
-          c = re.sub(r'COPY_PHASE_STRIP = YES;', 'COPY_PHASE_STRIP = NO;', c)
-          
-          with open(path, 'w') as f:
-              f.write(c)
-          EOF
-          python3 patch_xcode.py
-          
-          # 1.5. Guarantee overrides in ALL Flutter configs (Debug, Release, Profile)
-          # The -u flag forces the linker to preserve the exact missing Rust symbol
-          for config in ios/Flutter/*.xcconfig; do
-            if [ -f "$config" ]; then
-              echo "DEAD_CODE_STRIPPING = NO" >> "$config"
-              echo "STRIP_INSTALLED_PRODUCT = NO" >> "$config"
-              echo "COPY_PHASE_STRIP = NO" >> "$config"
-              echo "DEPLOYMENT_POSTPROCESSING = NO" >> "$config"
-              echo "STRIP_STYLE = non-global" >> "$config"
-              echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-u,_new_uint_8_list_0" >> "$config"
-            fi
-          done
-          
-          # 2. Force iOS 15.0 Deployment Target globally
+          # Force iOS 15.0 Deployment Target across the entire workspace configuration
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           
-          # 3. Inject Linker Flags and disable signing on CocoaPods
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -71,13 +35,13 @@ jobs:
           injection = """flutter_additional_ios_build_settings(target)
                 target.build_configurations.each do |config|
                   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -all_load -Wl,-u,_new_uint_8_list_0'
                   config.build_settings['DEAD_CODE_STRIPPING'] = 'NO'
                   config.build_settings['STRIP_INSTALLED_PRODUCT'] = 'NO'
                   config.build_settings['COPY_PHASE_STRIP'] = 'NO'
                   config.build_settings['STRIP_STYLE'] = 'non-global'
+                  config.build_settings['DEPLOYMENT_POSTPROCESSING'] = 'NO'
                   
-                  # Disable signing on CocoaPods
+                  # Bypasses local workspace code signing rules
                   config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                   config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                   config.build_settings['CODE_SIGN_IDENTITY'] = ''
@@ -95,8 +59,17 @@ jobs:
           cd ios
           pod install --repo-update
 
-      - name: Build Unsigned App Natively
-        run: flutter build ios --release --no-codesign
+      - name: Build Unsigned App with Flag Overrides
+        run: |
+          # The '--' separator appends arguments directly to the underlying xcodebuild execution.
+          # This guarantees optimization blocks are bypassed, forcing symbols to remain unstripped.
+          flutter build ios --release --no-codesign -- \
+            DEAD_CODE_STRIPPING=NO \
+            STRIP_INSTALLED_PRODUCT=NO \
+            COPY_PHASE_STRIP=NO \
+            DEPLOYMENT_POSTPROCESSING=NO \
+            STRIP_STYLE=non-global \
+            OTHER_LDFLAGS="\$(inherited) -all_load -Wl,-export_dynamic"
 
       - name: Manually Assemble Frameworks & Package IPA
         run: |
@@ -119,7 +92,7 @@ jobs:
           # Ensure Frameworks directory exists
           mkdir -p Payload/Runner.app/Frameworks
           
-          # Copy compiled frameworks
+          # Copy compiled dynamic frameworks
           find build/ios -path "*/Release-iphoneos/*.framework" -type d | grep -v "Runner.app" | while read fw; do
             cp -a "$fw" Payload/Runner.app/Frameworks/ || true
           done
@@ -128,7 +101,7 @@ jobs:
             cp -a ios/Flutter/Flutter.framework Payload/Runner.app/Frameworks/ || true
           fi
           
-          # Remove static frameworks that crash Sideloadly's Mach-O signer
+          # Remove non-dynamic architecture objects to preserve Mach-O structure validation
           for fw in Payload/Runner.app/Frameworks/*.framework; do
             [ -d "$fw" ] || continue
             bin_name=$(basename "$fw" .framework)
@@ -143,11 +116,11 @@ jobs:
             fi
           done
           
-          # Sign all remaining dynamic frameworks individually, then sign the app shell
+          # Force pseudo-ad-hoc code signature over frameworks so Sideloadly can process the package identity
           find Payload/Runner.app/Frameworks -type d -name "*.framework" -exec codesign --force --sign - {} \; || true
           codesign --force --deep --sign - Payload/Runner.app
           
-          # Zip into final IPA
+          # Zip into final testing package container
           zip -r -q app.ipa Payload
           ls -lh app.ipa
 
