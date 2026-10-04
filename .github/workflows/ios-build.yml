@@ -1,4 +1,4 @@
-name: iOS Sideloadly TRUE PROFILE
+name: iOS Sideloadly UNSTRIPPED AOT
 
 on:
   workflow_dispatch:
@@ -15,21 +15,58 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-
+          
       - name: Nuke Caches
         run: |
           flutter clean
           flutter pub get
 
-      - name: Lobotomize Apple Certificate Checks
+      - name: Force Static Linkage
         run: |
           set -e
-          
-          # Force iOS 15.0 Deployment Target globally
+          # 1. Force iOS 15.0 Deployment Target
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
-          sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
+          
+          # 2. Force CocoaPods to compile plugins statically instead of as dynamic frameworks
+          cat << 'EOF' > fix_podfile.py
+          import re
+          path = 'ios/Podfile'
+          with open(path, 'r') as f:
+              content = f.read()
+              
+          content = re.sub(r'use_frameworks!.*', "use_frameworks! :linkage => :static", content)
+          if "use_frameworks!" not in content:
+              content = "use_frameworks! :linkage => :static\n" + content
+              
+          with open(path, 'w') as f:
+              f.write(content)
+          EOF
+          python3 fix_podfile.py
 
-          # Strip the Development Team ID from the root Xcode project
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: ☢️ BRUTE-FORCE XCCONFIG INJECTION
+        run: |
+          # This script runs AFTER CocoaPods finishes. 
+          # It finds every single build configuration file and injects the absolute anti-stripping flags at the bottom.
+          # -all_load forces the AOT linker to include every single byte of the Rust library, preventing dlsym errors.
+          
+          find ios -name "*.xcconfig" -type f | while read file; do
+            echo "" >> "$file"
+            echo "// INJECTED BY GITHUB ACTIONS" >> "$file"
+            echo "DEAD_CODE_STRIPPING = NO" >> "$file"
+            echo "STRIP_INSTALLED_PRODUCT = NO" >> "$file"
+            echo "STRIP_STYLE = non-global" >> "$file"
+            echo "GCC_SYMBOLS_PRIVATE_EXTERN = NO" >> "$file"
+            echo "CODE_SIGNING_ALLOWED = NO" >> "$file"
+            echo "CODE_SIGNING_REQUIRED = NO" >> "$file"
+            echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic -Wl,-u,_new_uint_8_list_0" >> "$file"
+          done
+          
+          # Lobotomize the Xcode Project certificate checks
           cat << 'EOF' > patch_xcode.py
           import re
           path = 'ios/Runner.xcodeproj/project.pbxproj'
@@ -44,54 +81,24 @@ jobs:
               f.write(c)
           EOF
           python3 patch_xcode.py
-          
-          # Disable signing on CocoaPods
-          cat << 'EOF' > fix_podfile.py
-          path = 'ios/Podfile'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          target_hook = 'flutter_additional_ios_build_settings(target)'
-          injection = """flutter_additional_ios_build_settings(target)
-                target.build_configurations.each do |config|
-                  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-                  config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                  config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                  config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                end"""
-                
-          if target_hook in content:
-              content = content.replace(target_hook, injection)
-              with open(path, 'w') as f:
-                  f.write(content)
-          EOF
-          python3 fix_podfile.py
 
-      - name: Install CocoaPods
+      - name: Build Unsigned Release App Natively
         run: |
-          cd ios
-          pod install --repo-update
-
-      - name: Build Unsigned Profile App (AOT + Unstripped)
-        run: flutter build ios --profile --no-codesign
-
+          # Compiling natively as Release (AOT) so it opens on the phone.
+          # Our injected xcconfig files will natively block the optimizer.
+          flutter build ios --release --no-codesign
+          
       - name: Package Clean IPA for Sideloadly
         run: |
           set -e
-          
-          # Target the Profile build directory
           APP_DIR="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_DIR" ]; then 
-             APP_DIR="build/ios/Profile-iphoneos/Runner.app"
-          fi
-          
-          echo "Packaging from: $APP_DIR"
+          if [ ! -d "$APP_DIR" ]; then APP_DIR="build/ios/Release-iphoneos/Runner.app"; fi
           
           rm -rf Payload app.ipa
           mkdir -p Payload/Runner.app
           cp -a "$APP_DIR/"* Payload/Runner.app/
           
-          # Strip static artifacts out
+          # Clean static frameworks out
           find Payload/Runner.app -name "*.a" -type f -delete || true
           find Payload/Runner.app/Frameworks -name "*.framework" -type d | while read fw; do
             bin_name=$(basename "$fw" .framework)
@@ -102,13 +109,10 @@ jobs:
           
           codesign --force --deep --sign - Payload/Runner.app
           zip -r -q app.ipa Payload
-          
-          echo "FINAL IPA SIZE:"
-          ls -lh app.ipa
 
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TRUE-PROFILE-IPA
+          name: UNSTRIPPED-RELEASE-IPA
           path: app.ipa
           retention-days: 3
