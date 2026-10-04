@@ -25,6 +25,10 @@ jobs:
         run: |
           set -e
           
+          # 0. Force iOS 15.0 Deployment Target globally so CocoaPods doesn't crash
+          sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
+          sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
+
           # 1. Strip the Development Team ID from the root Xcode project
           cat << 'EOF' > patch_xcode.py
           import re
