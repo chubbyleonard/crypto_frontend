@@ -1,4 +1,4 @@
-name: iOS Sideloadly Debug (Bypass Stripping)
+name: iOS Sideloadly TRUE DEBUG
 
 on:
   workflow_dispatch:
@@ -16,22 +16,23 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Nuke Caches (Ensures Fresh Debug Build)
+        run: |
+          flutter clean
+          flutter pub get
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install --repo-update
 
-      - name: Build Unsigned Debug App (Preserves FFI Symbols Natively)
+      - name: Build Unsigned Debug App (Massive File Size)
         run: flutter build ios --debug --no-codesign
 
       - name: Package Clean IPA for Sideloadly
         run: |
           set -e
           
-          # Target the Debug build directory instead of Release
           APP_DIR="build/ios/iphoneos/Runner.app"
           if [ ! -d "$APP_DIR" ]; then 
              APP_DIR="build/ios/Debug-iphoneos/Runner.app"
@@ -54,10 +55,14 @@ jobs:
           
           codesign --force --deep --sign - Payload/Runner.app
           zip -r -q app.ipa Payload
+          
+          echo "FINAL IPA SIZE:"
+          ls -lh app.ipa
 
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Sideload-Debug-IPA
+          # NEW NAME: If you do not see this name, you are downloading the wrong file.
+          name: TRUE-DEBUG-IPA
           path: app.ipa
           retention-days: 3
