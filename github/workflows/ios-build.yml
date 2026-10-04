@@ -1,4 +1,4 @@
-name: iOS Sideloadly Release
+name: iOS Sideloadly Debug (Bypass Stripping)
 
 on:
   workflow_dispatch:
@@ -19,99 +19,25 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: ⚓ Force Swift Symbol Anchors (The Ultimate Fix)
-        run: |
-          set -e
-          
-          # Inject direct memory references into AppDelegate.swift so the compiler CANNOT strip the Rust math functions.
-          cat << 'EOF' > anchor_symbols.py
-          path = 'ios/Runner/AppDelegate.swift'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          injection_top = """
-          // --- FORCED BDK SYMBOL ANCHORS ---
-          @_silgen_name("new_uint_8_list_0")
-          func frb_new_uint_8_list_0()
-          
-          @_silgen_name("store_dart_post_cobject")
-          func frb_store_dart_post_cobject()
-          
-          @_silgen_name("get_dart_object")
-          func frb_get_dart_object()
-          
-          @_silgen_name("drop_dart_object")
-          func frb_drop_dart_object()
-          
-          @_silgen_name("new_dart_opaque")
-          func frb_new_dart_opaque()
-          // ---------------------------------
-          """
-          
-          injection_body = """
-                  // Trigger memory lookups to guarantee linker survival
-                  let _ = frb_new_uint_8_list_0
-                  let _ = frb_store_dart_post_cobject
-                  let _ = frb_get_dart_object
-                  let _ = frb_drop_dart_object
-                  let _ = frb_new_dart_opaque
-          """
-          
-          if 'frb_new_uint_8_list_0' not in content:
-              content = content.replace("import Flutter", "import Flutter\n" + injection_top)
-              # GeneratedPluginRegistrant is guaranteed to be in every Flutter AppDelegate
-              content = content.replace("GeneratedPluginRegistrant.register(with: self)", "GeneratedPluginRegistrant.register(with: self)\n" + injection_body)
-              
-              with open(path, 'w') as f:
-                  f.write(content)
-          print("✅ Successfully anchored Rust FFI symbols into AppDelegate.swift")
-          EOF
-          python3 anchor_symbols.py
-
-      - name: ⚙️ Force Static Linkage & Global Visibility
-        run: |
-          set -e
-          
-          # 1. Force iOS 15.0 Deployment Target
-          sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
-          
-          # 2. Force CocoaPods to bake the Rust library directly into the main Runner
-          cat << 'EOF' > fix_podfile.py
-          import re
-          path = 'ios/Podfile'
-          with open(path, 'r') as f:
-              content = f.read()
-              
-          content = re.sub(r'use_frameworks!.*', "use_frameworks! :linkage => :static", content)
-          if "use_frameworks!" not in content:
-              content = "use_frameworks! :linkage => :static\n" + content
-              
-          with open(path, 'w') as f:
-              f.write(content)
-          EOF
-          python3 fix_podfile.py
-          
-          # 3. Force Global Export inside Flutter's native configuration
-          CONFIG_PATH="ios/Flutter/Release.xcconfig"
-          echo "" >> $CONFIG_PATH
-          echo "DEAD_CODE_STRIPPING = NO" >> $CONFIG_PATH
-          echo "OTHER_LDFLAGS = \$(inherited) -all_load -Wl,-export_dynamic" >> $CONFIG_PATH
-
       - name: Install CocoaPods
         run: |
           cd ios
           pod install --repo-update
-          
-      - name: Build Unsigned Release App Natively
-        run: |
-          # A clean, standard build. The Swift anchors will do all the heavy lifting.
-          flutter build ios --release --no-codesign
-          
+
+      - name: Build Unsigned Debug App (Preserves FFI Symbols Natively)
+        run: flutter build ios --debug --no-codesign
+
       - name: Package Clean IPA for Sideloadly
         run: |
           set -e
+          
+          # Target the Debug build directory instead of Release
           APP_DIR="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_DIR" ]; then APP_DIR="build/ios/Release-iphoneos/Runner.app"; fi
+          if [ ! -d "$APP_DIR" ]; then 
+             APP_DIR="build/ios/Debug-iphoneos/Runner.app"
+          fi
+          
+          echo "Packaging from: $APP_DIR"
           
           rm -rf Payload app.ipa
           mkdir -p Payload/Runner.app
@@ -132,6 +58,6 @@ jobs:
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Sideload-Release-IPA
+          name: Sideload-Debug-IPA
           path: app.ipa
           retention-days: 3
