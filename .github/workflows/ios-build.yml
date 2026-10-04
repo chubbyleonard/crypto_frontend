@@ -1,4 +1,4 @@
-name: iOS Sideloadly TRUE DEBUG
+name: iOS Sideloadly TRUE PROFILE
 
 on:
   workflow_dispatch:
@@ -21,15 +21,15 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: Lobotomize Apple Certificate Checks (CRITICAL FOR GITHUB)
+      - name: Lobotomize Apple Certificate Checks
         run: |
           set -e
           
-          # 0. Force iOS 15.0 Deployment Target globally so CocoaPods doesn't crash
+          # Force iOS 15.0 Deployment Target globally
           sed -i '' "s/# platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
           sed -i '' "s/platform :ios.*/platform :ios, '15.0'/" ios/Podfile || true
 
-          # 1. Strip the Development Team ID from the root Xcode project
+          # Strip the Development Team ID from the root Xcode project
           cat << 'EOF' > patch_xcode.py
           import re
           path = 'ios/Runner.xcodeproj/project.pbxproj'
@@ -45,7 +45,7 @@ jobs:
           EOF
           python3 patch_xcode.py
           
-          # 2. Disable signing on CocoaPods to prevent dependency failures
+          # Disable signing on CocoaPods
           cat << 'EOF' > fix_podfile.py
           path = 'ios/Podfile'
           with open(path, 'r') as f:
@@ -72,16 +72,17 @@ jobs:
           cd ios
           pod install --repo-update
 
-      - name: Build Unsigned Debug App (Preserves Symbols)
-        run: flutter build ios --debug --no-codesign
+      - name: Build Unsigned Profile App (AOT + Unstripped)
+        run: flutter build ios --profile --no-codesign
 
       - name: Package Clean IPA for Sideloadly
         run: |
           set -e
           
+          # Target the Profile build directory
           APP_DIR="build/ios/iphoneos/Runner.app"
           if [ ! -d "$APP_DIR" ]; then 
-             APP_DIR="build/ios/Debug-iphoneos/Runner.app"
+             APP_DIR="build/ios/Profile-iphoneos/Runner.app"
           fi
           
           echo "Packaging from: $APP_DIR"
@@ -90,7 +91,7 @@ jobs:
           mkdir -p Payload/Runner.app
           cp -a "$APP_DIR/"* Payload/Runner.app/
           
-          # Strip static artifacts out so Sideloadly's Mach-O parser doesn't crash
+          # Strip static artifacts out
           find Payload/Runner.app -name "*.a" -type f -delete || true
           find Payload/Runner.app/Frameworks -name "*.framework" -type d | while read fw; do
             bin_name=$(basename "$fw" .framework)
@@ -108,6 +109,6 @@ jobs:
       - name: Upload Finished IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TRUE-DEBUG-IPA
+          name: TRUE-PROFILE-IPA
           path: app.ipa
           retention-days: 3
