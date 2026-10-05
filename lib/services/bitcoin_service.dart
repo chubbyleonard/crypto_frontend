@@ -13,15 +13,55 @@ class BitcoinService {
   static Future<Blockchain>? _blockchainInitialization;
 
   // ==========================================
-  // 1. Initialize the BDK Wallet (Concurrency-Safe)
+  // 1. Initialize & Auto-Discover the BDK Wallet
   // ==========================================
-  static Future<Wallet> _getWallet(
+  
+  /// Public accessor used by main.dart to pass the active wallet to the Withdraw UI
+  static Future<Wallet> getAutoDiscoveredWallet(
     String seedPhrase, {
-    BitcoinWalletType type = BitcoinWalletType.nativeSegWitBip84,
     String passphrase = "",
   }) {
-    _walletInitialization ??= _buildWallet(seedPhrase, type, passphrase);
+    _walletInitialization ??= _autoDiscoverWallet(seedPhrase, passphrase);
     return _walletInitialization!;
+  }
+
+  /// The Engine: Scans all derivation paths and locks in the one holding funds
+  static Future<Wallet> _autoDiscoverWallet(String seedPhrase, String passphrase) async {
+    final blockchain = await _getBlockchain();
+
+    // Order of scanning: Native SegWit (Most Common), Legacy, Nested, Taproot
+    final typesToScan = [
+      BitcoinWalletType.nativeSegWitBip84,
+      BitcoinWalletType.legacyBip44,
+      BitcoinWalletType.nestedSegWitBip49,
+      BitcoinWalletType.taprootBip86,
+    ];
+
+    Wallet? defaultWallet;
+
+    for (final type in typesToScan) {
+      final wallet = await _buildWallet(seedPhrase, type, passphrase);
+      
+      try {
+        // Sync the specific format with the live blockchain
+        await wallet.sync(blockchain);
+        final balance = await wallet.getBalance();
+        
+        // If unspent funds exist, lock this format into memory and stop scanning!
+        if (balance.total > 0) {
+          return wallet;
+        }
+      } catch (e) {
+        // Ignore network timeouts for a specific format and continue scanning
+      }
+
+      // Store Native SegWit as the fallback in case all formats have a 0 balance
+      if (type == BitcoinWalletType.nativeSegWitBip84) {
+        defaultWallet = wallet;
+      }
+    }
+
+    return defaultWallet!;
   }
 
   static Future<Wallet> _buildWallet(
@@ -109,15 +149,14 @@ class BitcoinService {
   }
 
   // ==========================================
-  // 3. Get Public Address
+  // 3. Get Public Address (Uses Auto-Discovered Wallet)
   // ==========================================
   static Future<String> getPublicAddress(
     String seedPhrase, {
-    BitcoinWalletType type = BitcoinWalletType.nativeSegWitBip84,
     String passphrase = "",
   }) async {
     try {
-      final wallet = await _getWallet(seedPhrase, type: type, passphrase: passphrase);
+      final wallet = await getAutoDiscoveredWallet(seedPhrase, passphrase: passphrase);
       final addressInfo = await wallet.getAddress(addressIndex: const AddressIndex.new());
       return addressInfo.address;
     } catch (e) {
@@ -126,17 +165,17 @@ class BitcoinService {
   }
 
   // ==========================================
-  // 4. Fetch On-Chain Balance
+  // 4. Fetch On-Chain Balance (Uses Auto-Discovered Wallet)
   // ==========================================
   static Future<double> getBalance(
     String seedPhrase, {
-    BitcoinWalletType type = BitcoinWalletType.nativeSegWitBip84,
     String passphrase = "",
   }) async {
     try {
-      final wallet = await _getWallet(seedPhrase, type: type, passphrase: passphrase);
+      final wallet = await getAutoDiscoveredWallet(seedPhrase, passphrase: passphrase);
       final blockchain = await _getBlockchain();
 
+      // Ensure we have the latest balance if checking again later
       await wallet.sync(blockchain);
 
       final balance = await wallet.getBalance();

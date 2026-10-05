@@ -4,11 +4,11 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:async';
 
-// --- NEW IMPORTS FOR NON-CUSTODIAL PIPELINE ---
+// --- IMPORTS FOR NON-CUSTODIAL PIPELINE ---
 import 'package:http/http.dart' as http;
 import 'package:web3dart/web3dart.dart' as web3;
 import 'package:bdk_flutter/bdk_flutter.dart' as bdk;
-import 'screens/withdraw_screen.dart'; // The Web3 UI we built
+import 'screens/withdraw_screen.dart'; 
 
 import 'services/api_service.dart';
 import 'services/web3_service.dart';
@@ -28,22 +28,22 @@ class CryptoApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0A0E17),
-        cardColor: const Color(0xFF141B2D),
+        scaffoldBackgroundColor: const Color(0xFF090A0F), // Deep Obsidian
+        cardColor: const Color(0xFF13151C), // Dark Zinc
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF00E5FF),
-          secondary: Color(0xFF00F5A0),
-          surface: Color(0xFF141B2D),
+          primary: Color(0xFF2970FF), // Premium Fintech Blue
+          secondary: Color(0xFF10B981), // Crisp Emerald
+          surface: Color(0xFF13151C),
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: const Color(0xFF161F36),
-          labelStyle: const TextStyle(color: Color(0xFF8F9CAE), fontSize: 14),
-          prefixIconColor: const Color(0xFF00E5FF),
+          fillColor: const Color(0xFF13151C),
+          labelStyle: const TextStyle(color: Color(0xFF8A919E), fontSize: 14),
+          prefixIconColor: const Color(0xFF2970FF),
           contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Color(0xFF26324D))),
-          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Color(0xFF26324D))),
-          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Color(0xFF00E5FF), width: 1.5)),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF222632))),
+          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF222632))),
+          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF2970FF), width: 1.5)),
         ),
         useMaterial3: true,
       ),
@@ -62,7 +62,6 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
   
-  // Web3 & RPC State
   late final web3.Web3Client _ethClient;
   late final http.Client _httpClient;
   
@@ -74,15 +73,11 @@ class _MainNavigationState extends State<MainNavigation> {
   @override
   void initState() {
     super.initState();
-    
-    // 1. Initialize the HTTP client and Alchemy connection
     _httpClient = http.Client();
     _ethClient = web3.Web3Client(
       'https://eth-mainnet.g.alchemy.com/v2/alch_9CfSUPJIa_kZnTnWw8M5U',
       _httpClient,
     );
-    
-    // 2. Derive active keys for the Web3 Withdraw Screen
     _loadWeb3Keys();
   }
 
@@ -91,26 +86,8 @@ class _MainNavigationState extends State<MainNavigation> {
     try {
       final seed = await _storage.read(key: 'web3_seed');
       if (seed != null && seed.isNotEmpty) {
-        
-        // Load EVM Key
         _ethPrivateKeyHex = Web3Service.getPrivateKeyFromSeed(seed);
-        
-        // Construct BDK Wallet instance for native BTC transactions
-        final mnemonic = await bdk.Mnemonic.fromString(seed);
-        final descriptorSecretKey = await bdk.DescriptorSecretKey.create(
-          network: bdk.Network.Bitcoin,
-          mnemonic: mnemonic,
-        );
-        final descriptor = await bdk.Descriptor.newBip84(
-          secretKey: descriptorSecretKey,
-          network: bdk.Network.Bitcoin,
-          keychain: bdk.KeychainKind.External,
-        );
-        _bdkWallet = await bdk.Wallet.create(
-          descriptor: descriptor,
-          network: bdk.Network.Bitcoin,
-          databaseConfig: const bdk.DatabaseConfig.memory(),
-        );
+        _bdkWallet = await BitcoinService.getAutoDiscoveredWallet(seed);
       }
     } catch (e) {
       debugPrint('Error generating Web3 keys: $e');
@@ -128,28 +105,26 @@ class _MainNavigationState extends State<MainNavigation> {
 
   void _switchTab(int index) => setState(() => _currentIndex = index);
 
-  // Router that elegantly preserves your CEX withdrawal screen 
-  // alongside the new Web3 withdrawal screen
   Widget _buildWithdrawRouter() {
     if (_isLoadingKeys) {
-      return const Center(child: CircularProgressIndicator(color: Color(0xFF00E5FF)));
+      return const Center(child: CircularProgressIndicator(color: Color(0xFF2970FF)));
     }
     
-    // If wallet keys exist, render a swipeable tab bar combining both systems
     if (_bdkWallet != null && _ethPrivateKeyHex != null) {
       return DefaultTabController(
         length: 2,
         child: Scaffold(
-          backgroundColor: const Color(0xFF0A0E17),
+          backgroundColor: const Color(0xFF090A0F),
           appBar: PreferredSize(
             preferredSize: const Size.fromHeight(60),
             child: AppBar(
-              backgroundColor: const Color(0xFF0D1322),
+              backgroundColor: const Color(0xFF090A0F),
               elevation: 0,
               bottom: const TabBar(
-                indicatorColor: Color(0xFF00E5FF),
-                labelColor: Color(0xFF00E5FF),
-                unselectedLabelColor: Color(0xFF8F9CAE),
+                indicatorColor: Color(0xFF2970FF),
+                labelColor: Color(0xFF2970FF),
+                unselectedLabelColor: Color(0xFF8A919E),
+                dividerColor: Color(0xFF222632),
                 tabs: [
                   Tab(text: 'Web3 Transfer'),
                   Tab(text: 'Exchange Transfer'),
@@ -159,19 +134,17 @@ class _MainNavigationState extends State<MainNavigation> {
           ),
           body: TabBarView(
             children: [
-              WithdrawScreen( // The new non-custodial pipeline
+              WithdrawScreen(
                 bdkWallet: _bdkWallet!,
                 ethPrivateKeyHex: _ethPrivateKeyHex!,
                 ethClient: _ethClient,
               ),
-              const WithdrawTab(), // Your original CEX logic 
+              const WithdrawTab(),
             ],
           ),
         ),
       );
     }
-    
-    // Fallback: If no Web3 wallet is setup yet, just render your normal Exchange form
     return const WithdrawTab(); 
   }
 
@@ -179,25 +152,30 @@ class _MainNavigationState extends State<MainNavigation> {
   Widget build(BuildContext context) {
     final screens = [
       DashboardTab(onNavigateToSettings: () => _switchTab(3)),
-      _buildWithdrawRouter(), // Injected routing logic
+      _buildWithdrawRouter(),
       const Web3Tab(),
       const SettingsTab(),
     ];
 
     return Scaffold(
-      body: SafeArea(child: screens[_currentIndex]),
+      body: SafeArea(
+        child: IndexedStack(
+          index: _currentIndex,
+          children: screens,
+        ),
+      ),
       bottomNavigationBar: Container(
-        decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF1C263D), width: 1))),
+        decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0xFF222632), width: 1))),
         child: NavigationBar(
-          backgroundColor: const Color(0xFF0D1322),
-          indicatorColor: const Color(0xFF00E5FF).withOpacity(0.18),
+          backgroundColor: const Color(0xFF090A0F),
+          indicatorColor: const Color(0xFF2970FF).withOpacity(0.12),
           selectedIndex: _currentIndex,
           onDestinationSelected: _switchTab,
           destinations: const [
-            NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined, color: Color(0xFF8F9CAE)), selectedIcon: Icon(Icons.account_balance_wallet, color: Color(0xFF00E5FF)), label: 'Exchange'),
-            NavigationDestination(icon: Icon(Icons.send_outlined, color: Color(0xFF8F9CAE)), selectedIcon: Icon(Icons.send, color: Color(0xFF00E5FF)), label: 'Withdraw'),
-            NavigationDestination(icon: Icon(Icons.language_outlined, color: Color(0xFF8F9CAE)), selectedIcon: Icon(Icons.language, color: Color(0xFF00E5FF)), label: 'Web3'),
-            NavigationDestination(icon: Icon(Icons.tune_outlined, color: Color(0xFF8F9CAE)), selectedIcon: Icon(Icons.tune, color: Color(0xFF00E5FF)), label: 'Settings'),
+            NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined, color: Color(0xFF8A919E)), selectedIcon: Icon(Icons.account_balance_wallet, color: Color(0xFF2970FF)), label: 'Exchange'),
+            NavigationDestination(icon: Icon(Icons.send_outlined, color: Color(0xFF8A919E)), selectedIcon: Icon(Icons.send, color: Color(0xFF2970FF)), label: 'Withdraw'),
+            NavigationDestination(icon: Icon(Icons.language_outlined, color: Color(0xFF8A919E)), selectedIcon: Icon(Icons.language, color: Color(0xFF2970FF)), label: 'Web3'),
+            NavigationDestination(icon: Icon(Icons.tune_outlined, color: Color(0xFF8A919E)), selectedIcon: Icon(Icons.tune, color: Color(0xFF2970FF)), label: 'Settings'),
           ],
         ),
       ),
@@ -205,7 +183,6 @@ class _MainNavigationState extends State<MainNavigation> {
   }
 }
 
-// --- HELPER: FORMAT CURRENCY SYMBOLS ---
 String _formatSymbol(String ticker, dynamic amount) {
   final num val = (amount is String) ? (double.tryParse(amount) ?? 0) : amount;
   final String t = ticker.toUpperCase();
@@ -216,7 +193,7 @@ String _formatSymbol(String ticker, dynamic amount) {
 }
 
 // ==========================================
-// TAB 1: DASHBOARD (EXCHANGE PORTFOLIO)
+// TAB 1: DASHBOARD
 // ==========================================
 class DashboardTab extends StatefulWidget {
   final VoidCallback onNavigateToSettings;
@@ -253,14 +230,8 @@ class _DashboardTabState extends State<DashboardTab> {
     
     try {
       final result = await ApiService.fetchBalance(
-        exchangeId: exchangeId, 
-        apiKey: apiKey, 
-        apiSecret: apiSecret, 
-        password: password
-      ).timeout(
-        const Duration(seconds: 15),
-        onTimeout: () => {'success': false, 'message': 'Connection timed out. Please try again.'},
-      );
+        exchangeId: exchangeId, apiKey: apiKey, apiSecret: apiSecret, password: password
+      ).timeout(const Duration(seconds: 15), onTimeout: () => {'success': false, 'message': 'Connection timed out.'});
       
       if (mounted) {
         setState(() {
@@ -279,19 +250,14 @@ class _DashboardTabState extends State<DashboardTab> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = e.toString();
-        });
-      }
+      if (mounted) setState(() { _isLoading = false; _errorMessage = e.toString(); });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
-      color: const Color(0xFF00E5FF), backgroundColor: const Color(0xFF141B2D), onRefresh: _fetchBalances,
+      color: const Color(0xFF2970FF), backgroundColor: const Color(0xFF13151C), onRefresh: _fetchBalances,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         children: [
@@ -301,12 +267,15 @@ class _DashboardTabState extends State<DashboardTab> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('CENTRALIZED EXCHANGE', style: TextStyle(color: Color(0xFF8F9CAE), fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  Text(_activeExchange.isEmpty ? 'Connected Assets' : '$_activeExchange Balance', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                  const Text('CENTRALIZED EXCHANGE', style: TextStyle(color: Color(0xFF8A919E), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  Text(_activeExchange.isEmpty ? 'Connected Assets' : '$_activeExchange Balance', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                 ],
               ),
-              IconButton.filledTonal(onPressed: _fetchBalances, icon: const Icon(Icons.refresh, size: 20), style: IconButton.styleFrom(backgroundColor: const Color(0xFF161F36), foregroundColor: const Color(0xFF00E5FF))),
+              IconButton.filledTonal(
+                onPressed: _fetchBalances, icon: const Icon(Icons.refresh, size: 20), 
+                style: IconButton.styleFrom(backgroundColor: const Color(0xFF13151C), foregroundColor: const Color(0xFF2970FF), side: const BorderSide(color: Color(0xFF222632)))
+              ),
             ],
           ),
           const SizedBox(height: 24),
@@ -316,11 +285,11 @@ class _DashboardTabState extends State<DashboardTab> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                  const CircularProgressIndicator(color: Color(0xFF2970FF)),
                   const SizedBox(height: 24),
                   TextButton(
-                    onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Request cancelled by user.'; }),
-                    child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF00E5FF))),
+                    onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Request cancelled.'; }),
+                    child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF2970FF))),
                   )
                 ],
               )
@@ -328,7 +297,7 @@ class _DashboardTabState extends State<DashboardTab> {
           )
           else if (_errorMessage == 'NO_KEYS') _buildEmptyKeysCard()
           else if (_errorMessage.isNotEmpty) _buildErrorCard(_errorMessage)
-          else if (_balances.isEmpty) const Center(child: Text('Zero Available Balances', style: TextStyle(color: Color(0xFF8F9CAE))))
+          else if (_balances.isEmpty) const Center(child: Text('Zero Available Balances', style: TextStyle(color: Color(0xFF8A919E))))
           else ..._balances.entries.map((entry) => _buildAssetTile(entry.key, entry.value)),
         ],
       ),
@@ -337,17 +306,17 @@ class _DashboardTabState extends State<DashboardTab> {
 
   Widget _buildEmptyKeysCard() {
     return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: const Color(0xFF141B2D), borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFF26324D))),
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(color: const Color(0xFF13151C), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFF222632))),
       child: Column(
         children: [
-          const Icon(Icons.key_off_rounded, size: 52, color: Color(0xFF8F9CAE)),
+          const Icon(Icons.key_off_rounded, size: 48, color: Color(0xFF8A919E)),
           const SizedBox(height: 16),
-          const Text('No Active Exchange', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
+          const Text('No Active Exchange', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 12),
           ElevatedButton.icon(
-            onPressed: widget.onNavigateToSettings, icon: const Icon(Icons.add_link), label: const Text('Configure Credentials'),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black),
+            onPressed: widget.onNavigateToSettings, icon: const Icon(Icons.add_link, size: 18), label: const Text('Configure Credentials'),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2970FF), foregroundColor: Colors.white, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
           ),
         ],
       ),
@@ -356,23 +325,25 @@ class _DashboardTabState extends State<DashboardTab> {
 
   Widget _buildErrorCard(String error) {
     return Container(
-      padding: const EdgeInsets.all(18), decoration: BoxDecoration(color: const Color(0xFF2B141E), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFF6B2432))),
-      child: Row(children: [const Icon(Icons.error_outline, color: Color(0xFFFF5252)), const SizedBox(width: 14), Expanded(child: Text(error, style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 13)))]),
+      padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF1F1316), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF4C2229))),
+      child: Row(children: [const Icon(Icons.error_outline, color: Color(0xFFEF4444), size: 20), const SizedBox(width: 14), Expanded(child: Text(error, style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13)))]),
     );
   }
 
   Widget _buildAssetTile(String symbol, dynamic amount) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF141B2D), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFF202A40))),
+      margin: const EdgeInsets.only(bottom: 12), padding: const EdgeInsets.all(16), 
+      decoration: BoxDecoration(color: const Color(0xFF13151C), borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFF222632))),
       child: Row(
         children: [
           Container(
-            width: 44, height: 44, decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xFF00E5FF), Color(0xFF0072FF)]), borderRadius: BorderRadius.circular(12)),
-            child: Center(child: Text(symbol.length > 3 ? symbol.substring(0, 3) : symbol, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black))),
+            width: 40, height: 40, 
+            decoration: BoxDecoration(color: const Color(0xFF1A1D24), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF222632))),
+            child: Center(child: Text(symbol.length > 3 ? symbol.substring(0, 3) : symbol, style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF8A919E), fontSize: 12))),
           ),
           const SizedBox(width: 14),
-          Expanded(child: Text(symbol, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-          Text(_formatSymbol(symbol, amount), style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Color(0xFF00F5A0))),
+          Expanded(child: Text(symbol, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16))),
+          Text(_formatSymbol(symbol, amount), style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.white)),
         ],
       ),
     );
@@ -476,43 +447,44 @@ class _WithdrawTabState extends State<WithdrawTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('TRANSFER ASSETS', style: TextStyle(color: Color(0xFF8F9CAE), fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            const Text('Withdraw To Wallet', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            const Text('TRANSFER ASSETS', style: TextStyle(color: Color(0xFF8A919E), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            const Text('Withdraw To Wallet', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 24),
             if (_statusMessage != null)
               Container(
-                padding: const EdgeInsets.all(14), margin: const EdgeInsets.only(bottom: 18), decoration: BoxDecoration(color: _isSuccess ? const Color(0xFF0F2B20) : const Color(0xFF2B141E), borderRadius: BorderRadius.circular(12), border: Border.all(color: _isSuccess ? const Color(0xFF1E6B4A) : const Color(0xFF6B2432))),
-                child: Text(_statusMessage!, style: TextStyle(color: _isSuccess ? const Color(0xFF00F5A0) : const Color(0xFFFF8A80), fontSize: 13)),
+                padding: const EdgeInsets.all(14), margin: const EdgeInsets.only(bottom: 18), 
+                decoration: BoxDecoration(color: _isSuccess ? const Color(0xFF0F241A) : const Color(0xFF1F1316), borderRadius: BorderRadius.circular(12), border: Border.all(color: _isSuccess ? const Color(0xFF17573A) : const Color(0xFF4C2229))),
+                child: Text(_statusMessage!, style: TextStyle(color: _isSuccess ? const Color(0xFF10B981) : const Color(0xFFFCA5A5), fontSize: 13)),
               ),
             TextFormField(controller: _currencyController, textCapitalization: TextCapitalization.characters, decoration: const InputDecoration(labelText: 'Asset Ticker', hintText: 'USD, BTC, ETH...', prefixIcon: Icon(Icons.toll_outlined)), validator: (v) => v == null || v.trim().isEmpty ? 'Enter asset ticker' : null),
             const SizedBox(height: 14),
             TextFormField(
-              controller: _addressController, decoration: InputDecoration(labelText: 'Destination Public Address', hintText: '0x... or bc1q...', prefixIcon: const Icon(Icons.qr_code_scanner_outlined), suffixIcon: IconButton(icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF00E5FF)), onPressed: _openQRScanner)),
-              validator: (v) => v == null || v.trim().isEmpty ? 'Enter recipient wallet address' : null,
+              controller: _addressController, decoration: InputDecoration(labelText: 'Destination Public Address', hintText: '0x... or bc1q...', prefixIcon: const Icon(Icons.qr_code_scanner_outlined), suffixIcon: IconButton(icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF2970FF)), onPressed: _openQRScanner)),
+              validator: (v) => v == null || v.trim().isEmpty ? 'Enter recipient address' : null,
             ),
             const SizedBox(height: 14),
             TextFormField(
               controller: _amountController, keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: 'Withdrawal Amount', hintText: '0.00', prefixIcon: const Icon(Icons.payments_outlined), suffixIcon: TextButton(onPressed: _applyMaxBalance, child: const Text('MAX', style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)))),
+              decoration: InputDecoration(labelText: 'Withdrawal Amount', hintText: '0.00', prefixIcon: const Icon(Icons.payments_outlined), suffixIcon: TextButton(onPressed: _applyMaxBalance, child: const Text('MAX', style: TextStyle(color: Color(0xFF2970FF), fontWeight: FontWeight.w600)))),
               validator: (v) => (v == null || double.tryParse(v) == null) ? 'Enter valid amount' : null,
             ),
             const SizedBox(height: 14),
             Container(
-              padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF141B2D), borderRadius: BorderRadius.circular(14)),
+              padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: const Color(0xFF13151C), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF222632))),
               child: Column(
                 children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Network Fee Estimate:', style: TextStyle(color: Color(0xFF8F9CAE))), Text(_formatSymbol(_currencyController.text, _networkFee))]),
-                  const Divider(color: Color(0xFF26324D), height: 24),
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Net Total to Arrive:', style: TextStyle(fontWeight: FontWeight.bold)), Text(_formatSymbol(_currencyController.text, _netTotal), style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00F5A0)))]),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Network Fee Estimate:', style: TextStyle(color: Color(0xFF8A919E), fontSize: 13)), Text(_formatSymbol(_currencyController.text, _networkFee), style: const TextStyle(fontSize: 13))]),
+                  const Divider(color: Color(0xFF222632), height: 24),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Net Total to Arrive:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)), Text(_formatSymbol(_currencyController.text, _netTotal), style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Colors.white))]),
                 ],
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 28),
             ElevatedButton(
               onPressed: _isLoading ? null : _submitWithdrawal,
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E5FF), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-              child: _isLoading ? const CircularProgressIndicator(color: Colors.black) : const Text('Execute Withdrawal', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2970FF), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
+              child: _isLoading ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Text('Execute Withdrawal', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
             ),
           ],
         ),
@@ -526,7 +498,7 @@ class QRScannerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan Wallet Address'), backgroundColor: const Color(0xFF0D1322)),
+      appBar: AppBar(title: const Text('Scan Address', style: TextStyle(fontSize: 16)), backgroundColor: const Color(0xFF090A0F), elevation: 0),
       body: MobileScanner(onDetect: (capture) {
         final List<Barcode> barcodes = capture.barcodes;
         if (barcodes.isNotEmpty && barcodes.first.rawValue != null) Navigator.pop(context, barcodes.first.rawValue);
@@ -536,7 +508,7 @@ class QRScannerScreen extends StatelessWidget {
 }
 
 // ==========================================
-// TAB 3: WEB3 WALLET (DUAL-CHAIN)
+// TAB 3: WEB3 WALLET 
 // ==========================================
 class Web3Tab extends StatefulWidget {
   const Web3Tab({super.key});
@@ -595,48 +567,31 @@ class _Web3TabState extends State<Web3Tab> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'Network error synchronizing blockchains: $e';
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() { _errorMessage = 'Sync error: $e'; _isLoading = false; });
     }
   }
 
   Future<void> _importWallet() async {
     final phrase = _seedController.text.trim().toLowerCase();
     final words = phrase.split(RegExp(r'\s+'));
-    
     if (words.length != 12 && words.length != 24) {
-      setState(() => _errorMessage = 'Seed phrase must be exactly 12 or 24 words.');
+      setState(() => _errorMessage = 'Phrase must be exactly 12 or 24 words.');
       return;
     }
-
     setState(() { _isLoading = true; _errorMessage = null; });
-    
     try {
       Web3Service.getPrivateKeyFromSeed(phrase);
       await _storage.write(key: 'web3_seed', value: phrase);
       await _initializeWalletData(phrase);
       _seedController.clear();
     } catch (e) {
-      if (mounted) {
-        setState(() { _errorMessage = 'Invalid seed phrase format or network error.'; _isLoading = false; });
-      }
+      if (mounted) setState(() { _errorMessage = 'Invalid format or network error.'; _isLoading = false; });
     }
   }
 
   Future<void> _removeWallet() async {
     await _storage.delete(key: 'web3_seed');
-    setState(() {
-      _hasWallet = false;
-      _ethAddress = '';
-      _ethBalance = 0.0;
-      _btcAddress = '';
-      _btcBalance = 0.0;
-      _errorMessage = null;
-    });
+    setState(() { _hasWallet = false; _ethAddress = ''; _ethBalance = 0.0; _btcAddress = ''; _btcBalance = 0.0; _errorMessage = null; });
   }
 
   @override
@@ -646,9 +601,9 @@ class _Web3TabState extends State<Web3Tab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('DECENTRALIZED', style: TextStyle(color: Color(0xFF8F9CAE), fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          const Text('Web3 Wallet', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+          const Text('DECENTRALIZED', style: TextStyle(color: Color(0xFF8A919E), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          const Text('Web3 Wallet', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 24),
           
           if (_isLoading)
@@ -658,20 +613,15 @@ class _Web3TabState extends State<Web3Tab> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                    const CircularProgressIndicator(color: Color(0xFF2970FF)),
                     const SizedBox(height: 24),
-                    TextButton(
-                      onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Request cancelled by user.'; }),
-                      child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF00E5FF))),
-                    )
+                    TextButton(onPressed: () => setState(() { _isLoading = false; _errorMessage = 'Cancelled.'; }), child: const Text('Cancel Request', style: TextStyle(color: Color(0xFF2970FF))))
                   ],
                 )
               )
             )
-          else if (_hasWallet)
-            _buildWalletDashboard()
-          else
-            _buildImportForm(),
+          else if (_hasWallet) _buildWalletDashboard()
+          else _buildImportForm(),
         ],
       ),
     );
@@ -683,31 +633,24 @@ class _Web3TabState extends State<Web3Tab> {
       children: [
         if (_errorMessage != null)
           Container(
-            padding: const EdgeInsets.all(14), 
-            margin: const EdgeInsets.only(bottom: 18), 
-            decoration: BoxDecoration(color: const Color(0xFF2B141E), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF6B2432))),
+            padding: const EdgeInsets.all(14), margin: const EdgeInsets.only(bottom: 18), 
+            decoration: BoxDecoration(color: const Color(0xFF1F1316), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF4C2229))),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(child: Text(_errorMessage!, style: const TextStyle(color: Color(0xFFFF8A80), fontSize: 13))),
+                Expanded(child: Text(_errorMessage!, style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 13))),
                 const SizedBox(width: 8),
-                GestureDetector(
-                  onTap: () => setState(() => _errorMessage = null), 
-                  child: const Icon(Icons.close, color: Color(0xFFFF8A80), size: 20),
-                )
+                GestureDetector(onTap: () => setState(() => _errorMessage = null), child: const Icon(Icons.close, color: Color(0xFFFCA5A5), size: 18))
               ],
             ),
           ),
-        const Text('Enter your 12 or 24-word recovery phrase to securely derive your Dual-Chain (BTC & ETH) private keys.', style: TextStyle(color: Color(0xFF8F9CAE), height: 1.4)),
+        const Text('Enter your 12 or 24-word recovery phrase to securely derive your Dual-Chain private keys.', style: TextStyle(color: Color(0xFF8A919E), height: 1.5, fontSize: 13)),
         const SizedBox(height: 20),
-        TextField(
-          controller: _seedController, maxLines: 4,
-          decoration: const InputDecoration(hintText: 'word1 word2 word3...', labelText: 'Recovery Phrase', alignLabelWithHint: true),
-        ),
+        TextField(controller: _seedController, maxLines: 4, decoration: const InputDecoration(hintText: 'word1 word2 word3...', labelText: 'Recovery Phrase', alignLabelWithHint: true)),
         const SizedBox(height: 24),
         ElevatedButton.icon(
-          onPressed: _importWallet, icon: const Icon(Icons.download), label: const Text('Import Wallet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00F5A0), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+          onPressed: _importWallet, icon: const Icon(Icons.download, size: 18), label: const Text('Import Wallet', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
         )
       ]
     );
@@ -718,59 +661,53 @@ class _Web3TabState extends State<Web3Tab> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildAssetCard(
-          title: 'NATIVE BITCOIN',
-          symbol: 'BTC',
-          address: _btcAddress,
-          balance: _btcBalance,
-          gradient: const [Color(0xFFF7931A), Color(0xFFF37321)],
+          title: 'NATIVE BITCOIN', symbol: 'BTC', address: _btcAddress, balance: _btcBalance,
+          accent: const Color(0xFFF7931A),
         ),
         const SizedBox(height: 16),
         _buildAssetCard(
-          title: 'ETHEREUM VIRTUAL MACHINE',
-          symbol: 'ETH',
-          address: _ethAddress,
-          balance: _ethBalance,
-          gradient: const [Color(0xFF00E5FF), Color(0xFF0072FF)],
+          title: 'ETHEREUM VIRTUAL MACHINE', symbol: 'ETH', address: _ethAddress, balance: _ethBalance,
+          accent: const Color(0xFF627EEA),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 28),
         OutlinedButton.icon(
-          onPressed: _removeWallet, icon: const Icon(Icons.logout), label: const Text('Disconnect Device Keys'),
-          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFFF5252), side: const BorderSide(color: Color(0xFF6B2432)), padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+          onPressed: _removeWallet, icon: const Icon(Icons.logout, size: 18), label: const Text('Disconnect Device Keys', style: TextStyle(fontSize: 14)),
+          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFFCA5A5), side: const BorderSide(color: Color(0xFF4C2229)), padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
         )
       ],
     );
   }
 
-  Widget _buildAssetCard({required String title, required String symbol, required String address, required double balance, required List<Color> gradient}) {
+  Widget _buildAssetCard({required String title, required String symbol, required String address, required double balance, required Color accent}) {
     return GestureDetector(
       onTap: () {
         Clipboard.setData(ClipboardData(text: address));
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$symbol Address copied to clipboard!')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$symbol Address copied!'), backgroundColor: const Color(0xFF13151C), behavior: SnackBarBehavior.floating));
       },
       child: Container(
         padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(color: const Color(0xFF141B2D), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFF202A40))),
+        decoration: BoxDecoration(color: const Color(0xFF13151C), borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xFF222632))),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(title, style: const TextStyle(color: Color(0xFF8F9CAE), fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w700)),
-                const Icon(Icons.copy, size: 16, color: Color(0xFF8F9CAE)),
+                Text(title, style: const TextStyle(color: Color(0xFF8A919E), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+                const Icon(Icons.copy, size: 14, color: Color(0xFF8A919E)),
               ]
             ),
             const SizedBox(height: 12),
-            Text('${address.substring(0, 10)}...${address.substring(address.length - 8)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 1.1)),
-            const SizedBox(height: 16),
+            Text('${address.substring(0, 10)}...${address.substring(address.length - 8)}', style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14, letterSpacing: 1.1, fontFamily: 'monospace')),
+            const SizedBox(height: 20),
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
-              decoration: BoxDecoration(gradient: LinearGradient(colors: gradient), borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+              decoration: BoxDecoration(color: accent.withOpacity(0.1), borderRadius: BorderRadius.circular(10), border: Border.all(color: accent.withOpacity(0.2))),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('BALANCE', style: TextStyle(color: Colors.black54, fontWeight: FontWeight.w700, fontSize: 12)),
-                  Text(_formatSymbol(symbol, balance), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.black)),
+                  Text('BALANCE', style: TextStyle(color: accent, fontWeight: FontWeight.w600, fontSize: 11, letterSpacing: 1.2)),
+                  Text(_formatSymbol(symbol, balance), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white)),
                 ]
               )
             )
@@ -782,7 +719,7 @@ class _Web3TabState extends State<Web3Tab> {
 }
 
 // ==========================================
-// TAB 4: SETTINGS (EXCHANGE GATEWAY)
+// TAB 4: SETTINGS
 // ==========================================
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -834,7 +771,7 @@ class _SettingsTabState extends State<SettingsTab> {
     await _storage.write(key: 'apiKey', value: _keyController.text.trim());
     await _storage.write(key: 'apiSecret', value: _secretController.text.trim());
     await _storage.write(key: 'apiPassword', value: _passwordController.text.trim());
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Credentials Encrypted Successfully', style: TextStyle(color: Color(0xFF00F5A0)))));
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Credentials Saved', style: TextStyle(color: Color(0xFF10B981))), backgroundColor: Color(0xFF13151C), behavior: SnackBarBehavior.floating));
   }
 
   @override
@@ -844,32 +781,32 @@ class _SettingsTabState extends State<SettingsTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('CONFIGURATION', style: TextStyle(color: Color(0xFF8F9CAE), fontSize: 12, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          const Text('Exchange Gateway', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 20),
+          const Text('CONFIGURATION', style: TextStyle(color: Color(0xFF8A919E), fontSize: 11, letterSpacing: 1.5, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          const Text('Exchange Gateway', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 24),
           DropdownButtonFormField<String>(
-            value: _selectedExchange, dropdownColor: const Color(0xFF141B2D), decoration: const InputDecoration(labelText: 'Target Exchange Platform', prefixIcon: Icon(Icons.corporate_fare_outlined)),
-            items: _exchanges.entries.map((item) => DropdownMenuItem<String>(value: item.key, child: Text(item.value, style: const TextStyle(fontSize: 15)))).toList(),
+            value: _selectedExchange, dropdownColor: const Color(0xFF13151C), decoration: const InputDecoration(labelText: 'Target Platform', prefixIcon: Icon(Icons.corporate_fare_outlined)),
+            items: _exchanges.entries.map((item) => DropdownMenuItem<String>(value: item.key, child: Text(item.value, style: const TextStyle(fontSize: 14)))).toList(),
             onChanged: (val) => setState(() => _selectedExchange = val!),
           ),
           if (_selectedExchange == 'other') ...[
             const SizedBox(height: 14),
-            TextField(controller: _customExchangeController, decoration: const InputDecoration(labelText: 'Custom CCXT Exchange ID (e.g. bitstamp)', prefixIcon: Icon(Icons.code))),
+            TextField(controller: _customExchangeController, decoration: const InputDecoration(labelText: 'CCXT Exchange ID', prefixIcon: Icon(Icons.code))),
           ],
           const SizedBox(height: 14),
-          TextField(controller: _keyController, decoration: const InputDecoration(labelText: 'Exchange API Key', prefixIcon: Icon(Icons.vpn_key_outlined))),
+          TextField(controller: _keyController, decoration: const InputDecoration(labelText: 'API Key', prefixIcon: Icon(Icons.vpn_key_outlined))),
           const SizedBox(height: 14),
           TextField(
             controller: _secretController, obscureText: _obscureSecret,
-            decoration: InputDecoration(labelText: 'Exchange API Secret', prefixIcon: const Icon(Icons.lock_outline), suffixIcon: IconButton(icon: Icon(_obscureSecret ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: const Color(0xFF8F9CAE)), onPressed: () => setState(() => _obscureSecret = !_obscureSecret))),
+            decoration: InputDecoration(labelText: 'API Secret', prefixIcon: const Icon(Icons.lock_outline), suffixIcon: IconButton(icon: Icon(_obscureSecret ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: const Color(0xFF8A919E)), onPressed: () => setState(() => _obscureSecret = !_obscureSecret))),
           ),
           const SizedBox(height: 14),
-          TextField(controller: _passwordController, obscureText: _obscureSecret, decoration: const InputDecoration(labelText: 'API Passphrase (Optional)', prefixIcon: Icon(Icons.password_outlined))),
-          const SizedBox(height: 24),
+          TextField(controller: _passwordController, obscureText: _obscureSecret, decoration: const InputDecoration(labelText: 'Passphrase (Optional)', prefixIcon: Icon(Icons.password_outlined))),
+          const SizedBox(height: 28),
           ElevatedButton(
-            onPressed: _saveSettings, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00F5A0), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-            child: const Text('Save & Encrypt Keys', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            onPressed: _saveSettings, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2970FF), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
+            child: const Text('Save & Encrypt Keys', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
           ),
         ],
       ),
